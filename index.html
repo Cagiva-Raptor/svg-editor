@@ -202,6 +202,7 @@ const vbInput  = document.getElementById("vb");
 
 const SHAPES = new Set(["path","rect","circle","ellipse","line","polyline","polygon","text","image"]);
 const LABELS = {path:"Pad",rect:"Rechthoek",circle:"Cirkel",ellipse:"Ellipse",line:"Lijn",polyline:"Polylijn",polygon:"Veelhoek",text:"Tekst",image:"Afbeelding"};
+const DEFAULT_FONT = "Arial, Helvetica, sans-serif";
 const INHERIT = ["fill","fill-rule","fill-opacity","stroke","stroke-width","stroke-linecap","stroke-linejoin","stroke-miterlimit","stroke-dasharray","stroke-opacity","opacity","color","font-family","font-size","font-weight","text-anchor"];
 const PRESENT = new Set(INHERIT);
 
@@ -557,6 +558,21 @@ function refreshProps(){
     <div class="field"><label>Grootte</label>
       <input type="number" id="p-fs" min="1" value="${el.getAttribute("font-size") || 16}">
     </div>
+    <div class="field"><label>Lettertype</label>
+      <input type="text" id="p-ff" list="ff-list" value="${escapeAttr(el.getAttribute("font-family")||"")}" placeholder="${DEFAULT_FONT}" style="width:100%">
+    </div>
+    <datalist id="ff-list">
+      <option value="Arial, Helvetica, sans-serif"></option>
+      <option value="Verdana, Geneva, sans-serif"></option>
+      <option value="Tahoma, sans-serif"></option>
+      <option value="Trebuchet MS, sans-serif"></option>
+      <option value="Georgia, serif"></option>
+      <option value="Times New Roman, Times, serif"></option>
+      <option value="Courier New, monospace"></option>
+      <option value="sans-serif"></option>
+      <option value="serif"></option>
+      <option value="monospace"></option>
+    </datalist>
     <div class="row" style="margin-top:6px">
       <button id="p-bold" class="ghost ${textStyleOn(el,"font-weight")?"active":""}" style="font-weight:700" title="Vet (Ctrl+B)">B</button>
       <button id="p-italic" class="ghost ${textStyleOn(el,"font-style")?"active":""}" style="font-style:italic" title="Cursief (Ctrl+I)">I</button>
@@ -587,6 +603,7 @@ function refreshProps(){
   on("p-text","change", commit);
   on("p-fs","input", e => apply("font-size", e.target.value));
   on("p-fs","change", commit);
+  on("p-ff","change", e => { const v = e.target.value.trim(); if (v) el.setAttribute("font-family", v); else el.removeAttribute("font-family"); commit(); });
   on("p-bold","click", () => toggleTextStyle(selection[0], "font-weight"));
   on("p-italic","click", () => toggleTextStyle(selection[0], "font-style"));
   on("p-underline","click", () => toggleTextStyle(selection[0], "text-decoration"));
@@ -1063,6 +1080,7 @@ function startDraw(e){
     el = newShape("text");
     el.textContent = "Tekst";
     el.setAttribute("font-size", Math.round(docVB.w/25));
+    el.setAttribute("font-family", DEFAULT_FONT);
     el.setAttribute("fill", "#e6e7ea");
     el.setAttribute("stroke", "none");
     el.setAttribute("x", p.x); el.setAttribute("y", p.y);
@@ -1548,6 +1566,10 @@ function loadSVG(text){
         clone.removeAttribute("transform");
         clone.dataset.id = nextId();
         INHERIT.forEach(a => { if (!clone.hasAttribute(a) && nextInh[a] != null) clone.setAttribute(a, nextInh[a]); });
+        if (t === "text"){
+          if (!clone.hasAttribute("font-family")) clone.setAttribute("font-family", DEFAULT_FONT);
+          if (!clone.hasAttribute("font-size")) clone.setAttribute("font-size", "16");
+        }
         setMatrix(clone, m);
         leaves.push(clone);
       }
