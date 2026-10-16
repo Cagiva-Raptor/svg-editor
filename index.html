@@ -309,7 +309,7 @@ function refreshProps(){
   const strokeNone = stroke === "none" || stroke === null;
 
   propsEl.innerHTML = `
-    <div class="field"><label>${LABELS[t]||t}</label></div>
+    <div class="field"><label>${el.dataset.bucket ? "Vlak" : (LABELS[t]||t)}</label></div>
     <div class="field"><label>Vulling</label>
       <input type="color" id="p-fill" value="${toHex(fillNone ? "#000000" : fill)}">
       <label style="flex:0"><input type="checkbox" id="p-fillnone" ${fillNone?"checked":""}> geen</label>
@@ -379,7 +379,7 @@ function rebuildLayers(){
     const row = document.createElement("div");
     row.className = "layer" + (el === selected ? " sel" : "");
     const hidden = el.getAttribute("visibility") === "hidden";
-    row.innerHTML = `<span class="name">${LABELS[tag(el)]||tag(el)}</span>
+    row.innerHTML = `<span class="name">${el.dataset.bucket ? "Vlak" : (LABELS[tag(el)]||tag(el))}</span>
       <span class="mini" data-act="vis" title="Zichtbaar">${hidden?"◌":"●"}</span>
       <span class="mini" data-act="del" title="Verwijder">✕</span>`;
     row.addEventListener("click", e => {
@@ -460,6 +460,7 @@ function bucketFillAt(clientX, clientY, color){
     }
     const path = svgEl("path");
     path.dataset.id = nextId();
+    path.dataset.bucket = "1";
     path.setAttribute("d", d);
     path.setAttribute("fill", color || "#ffcc00");
     path.setAttribute("fill-rule", "evenodd");
@@ -547,7 +548,20 @@ stage.addEventListener("pointerdown", onStageDown);
 
 function onStageDown(e){
   if (e.button === 1 || spaceDown){ e.preventDefault(); startPan(e); return; }
-  if (tool === "fill"){ bucketFillAt(e.clientX, e.clientY, document.getElementById("fill-color").value); return; }
+  if (tool === "fill"){
+    const color = document.getElementById("fill-color").value;
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    const bucket = hit && hit.closest && hit.closest("[data-bucket]");
+    if (bucket){
+      bucket.setAttribute("fill", color);
+      select(bucket);
+      pushHistory();
+      setStatus("Vulling herkleurd");
+    } else {
+      bucketFillAt(e.clientX, e.clientY, color);
+    }
+    return;
+  }
   if (tool !== "select"){ startDraw(e); return; }
   if (e.target === stage) { select(null); refreshOverlay(); return; }
   const el = e.target.closest && e.target.closest("[data-id]");
