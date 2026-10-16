@@ -73,6 +73,8 @@
   <button id="tool-line" title="Lijn (L)">Lijn</button>
   <button id="tool-path" title="Potlood (P)">Potlood</button>
   <button id="tool-text" title="Tekst (T)">Tekst</button>
+  <button id="tool-fill" title="Emmer: vul lege vlakken (U)">Vullen</button>
+  <input type="color" id="fill-color" value="#ffcc00" title="Vulkleur">
   <div class="sep"></div>
   <button id="undo" title="Ongedaan (Ctrl+Z)">Undo</button>
   <button id="redo" title="Opnieuw (Ctrl+Y)">Redo</button>
@@ -126,7 +128,7 @@
       <button id="doc-stroke" class="ghost">Alle randen</button>
     </div>
     <p class="hint">Werkt niet? Zoom met het wiel, pan met midden-muis of spatie+slepen.<br>
-    V: selecteren · R/E/L/P/T: tekenen · Del: verwijderen · Ctrl+Z/Y: undo/redo</p>
+    V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer (vul lege vlakken)</b> · Del: verwijderen · Ctrl+Z/Y: undo/redo</p>
   </aside>
 </main>
 
@@ -407,6 +409,136 @@ function newShape(kind){
   return el;
 }
 
+/* ---------- emmer / vlakvulling ---------- */
+const BUCKET_RASTER_W = 1024;
+
+function bucketFillAt(clientX, clientY, color){
+  const pt = toUser({clientX, clientY});
+  const W = BUCKET_RASTER_W;
+  const H = Math.max(1, Math.round(W * docVB.h / docVB.w));
+  const px = Math.round((pt.x - docVB.x) / docVB.w * W);
+  const py = Math.round((pt.y - docVB.y) / docVB.h * H);
+  if (px < 0 || py < 0 || px >= W || py >= H){ setStatus("Klik binnen het canvas"); return; }
+
+  const blob = new Blob([buildExportSVG()], {type:"image/svg+xml;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  setStatus("Vullen…");
+  img.onload = () => {
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d", {willReadFrequently:true});
+    ctx.clearRect(0,0,W,H);
+    ctx.drawImage(img, 0, 0, W, H);
+    URL.revokeObjectURL(url);
+    const data = ctx.getImageData(0,0,W,H).data;
+    const ALPHA = 128;
+    const empty = i => data[i*4+3] < ALPHA;
+    if (!empty(py*W+px)){ setStatus("Daar staat al een lijn/vulling — klik op een leeg vlak"); return; }
+
+    // flood fill (4-connectiviteit)
+    const mask = new Uint8Array(W*H);
+    const stack = [py*W+px];
+    mask[py*W+px] = 1;
+    while (stack.length){
+      const i = stack.pop();
+      const x = i % W, y = (i / W) | 0;
+      if (x > 0   && !mask[i-1] && empty(i-1)){ mask[i-1]=1; stack.push(i-1); }
+      if (x < W-1 && !mask[i+1] && empty(i+1)){ mask[i+1]=1; stack.push(i+1); }
+      if (y > 0   && !mask[i-W] && empty(i-W)){ mask[i-W]=1; stack.push(i-W); }
+      if (y < H-1 && !mask[i+W] && empty(i+W)){ mask[i+W]=1; stack.push(i+W); }
+    }
+
+    const polys = traceMask(mask, W, H).map(p => rdp(p, 1.2)).filter(p => p.length >= 3);
+    if (!polys.length){ setStatus("Geen vlak gevonden"); return; }
+
+    const sx = docVB.w / W, sy = docVB.h / H;
+    let d = "";
+    for (const poly of polys){
+      const pts = poly.map(p => `${(docVB.x + p.x*sx).toFixed(2)} ${(docVB.y + p.y*sy).toFixed(2)}`);
+      d += "M " + pts.join(" L ") + " Z ";
+    }
+    const path = svgEl("path");
+    path.dataset.id = nextId();
+    path.setAttribute("d", d);
+    path.setAttribute("fill", color || "#ffcc00");
+    path.setAttribute("fill-rule", "evenodd");
+    path.setAttribute("stroke", "none");
+    content.insertBefore(path, content.firstChild);
+    pushHistory();
+    rebuildLayers(); refreshProps(); refreshOverlay();
+    setStatus("Vlak gevuld — het ligt achter de lijnen");
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); setStatus("Vullen mislukt"); };
+  img.src = url;
+}
+
+// rand van de masker-regio volgen -> gesloten contouren (pixel-coördinaten)
+function traceMask(mask, W, H){
+  const has = (x,y) => x>=0 && y>=0 && x<W && y<H && mask[y*W+x];
+  const starts = new Map();
+  const edges = [];
+  const key = (x,y) => x + "," + y;
+  const add = (sx,sy,ex,ey) => {
+    const e = {sx, sy, ex, ey, used:false};
+    edges.push(e);
+    const k = key(sx,sy);
+    if (!starts.has(k)) starts.set(k, []);
+    starts.get(k).push(e);
+  };
+  for (let y=0; y<H; y++){
+    for (let x=0; x<W; x++){
+      if (!mask[y*W+x]) continue;
+      if (!has(x,y-1))   add(x,   y,   x+1, y);
+      if (!has(x+1,y))   add(x+1, y,   x+1, y+1);
+      if (!has(x,y+1))   add(x+1, y+1, x,   y+1);
+      if (!has(x-1,y))   add(x,   y+1, x,   y);
+    }
+  }
+  const polys = [];
+  for (const e0 of edges){
+    if (e0.used) continue;
+    let cur = e0;
+    const poly = [{x:cur.sx, y:cur.sy}];
+    let guard = 0;
+    while (cur && !cur.used && guard++ < edges.length + 4){
+      cur.used = true;
+      poly.push({x:cur.ex, y:cur.ey});
+      if (cur.ex === poly[0].x && cur.ey === poly[0].y) break;
+      const outs = starts.get(key(cur.ex, cur.ey));
+      let next = null;
+      if (outs) for (const c of outs){ if (!c.used){ next = c; break; } }
+      cur = next;
+    }
+    if (poly.length >= 4) polys.push(poly);
+  }
+  return polys;
+}
+
+// Ramer–Douglas–Peucker vereenvoudiging
+function rdp(points, eps){
+  let pts = points;
+  if (pts.length > 1 && pts[0].x === pts[pts.length-1].x && pts[0].y === pts[pts.length-1].y) pts = pts.slice(0, -1);
+  if (pts.length < 3) return pts;
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length-1] = true;
+  (function simplify(a, b){
+    let maxd = 0, idx = -1;
+    for (let i=a+1; i<b; i++){
+      const d = perpDist(pts[i], pts[a], pts[b]);
+      if (d > maxd){ maxd = d; idx = i; }
+    }
+    if (maxd > eps && idx !== -1){ keep[idx] = true; simplify(a, idx); simplify(idx, b); }
+  })(0, pts.length-1);
+  return pts.filter((_, i) => keep[i]);
+}
+function perpDist(p, a, b){
+  const dx = b.x-a.x, dy = b.y-a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-9) return Math.hypot(p.x-a.x, p.y-a.y);
+  return Math.abs(dy*p.x - dx*p.y + b.x*a.y - b.y*a.x) / len;
+}
+
 /* ---------- gestures ---------- */
 let gesture = null;
 
@@ -415,6 +547,7 @@ stage.addEventListener("pointerdown", onStageDown);
 
 function onStageDown(e){
   if (e.button === 1 || spaceDown){ e.preventDefault(); startPan(e); return; }
+  if (tool === "fill"){ bucketFillAt(e.clientX, e.clientY, document.getElementById("fill-color").value); return; }
   if (tool !== "select"){ startDraw(e); return; }
   if (e.target === stage) { select(null); refreshOverlay(); return; }
   const el = e.target.closest && e.target.closest("[data-id]");
@@ -606,7 +739,7 @@ function duplicateSelected(){
 /* ---------- tools ---------- */
 function setTool(t){
   tool = t;
-  ["select","rect","ellipse","line","path","text"].forEach(n => {
+  ["select","rect","ellipse","line","path","text","fill"].forEach(n => {
     document.getElementById("tool-"+n).classList.toggle("active", n === t);
   });
   overlay.style.pointerEvents = "none";
@@ -618,6 +751,7 @@ document.getElementById("tool-ellipse").onclick = () => setTool("ellipse");
 document.getElementById("tool-line").onclick    = () => setTool("line");
 document.getElementById("tool-path").onclick    = () => setTool("path");
 document.getElementById("tool-text").onclick    = () => setTool("text");
+document.getElementById("tool-fill").onclick    = () => setTool("fill");
 
 /* ---------- toolbar ---------- */
 document.getElementById("undo").onclick = undo;
@@ -869,7 +1003,7 @@ document.addEventListener("keydown", e => {
   if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "z"){ e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "y"){ e.preventDefault(); redo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "d"){ e.preventDefault(); duplicateSelected(); return; }
-  const keys = {v:"select", r:"rect", e:"ellipse", l:"line", p:"path", t:"text"};
+  const keys = {v:"select", r:"rect", e:"ellipse", l:"line", p:"path", t:"text", u:"fill"};
   if (keys[e.key.toLowerCase()]) setTool(keys[e.key.toLowerCase()]);
 });
 
