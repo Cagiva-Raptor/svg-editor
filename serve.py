@@ -20,6 +20,8 @@ import socketserver
 import os
 import sys
 import json
+import shutil
+import subprocess
 import urllib.parse
 import tempfile
 
@@ -53,12 +55,35 @@ def guess_ext(data, content_type):
         return ".webp"
     if data[:2] == b"BM":
         return ".bmp"
+    if data[:4] in (b"II*\x00", b"MM\x00*"):
+        return ".tiff"
+    if data[:4] == b"\x00\x00\x01\x00":
+        return ".ico"
+    if data[4:8] == b"ftyp":
+        return ".avif"           # heic/avif; VTracer faalt -> ImageMagick-fallback
     ct = (content_type or "").lower()
     for needle, ext in (("png", ".png"), ("jpeg", ".jpg"), ("jpg", ".jpg"),
-                        ("webp", ".webp"), ("gif", ".gif"), ("bmp", ".bmp")):
+                        ("webp", ".webp"), ("gif", ".gif"), ("bmp", ".bmp"),
+                        ("tiff", ".tiff"), ("heic", ".avif"), ("avif", ".avif")):
         if needle in ct:
             return ext
     return ".png"
+
+
+def convert(src, dst, params):
+    """VTracer; valt bij onbekende formaten terug op ImageMagick-normalisatie."""
+    try:
+        _vtracer.convert_image_to_svg_py(src, dst, **params)
+        return
+    except BaseException as first:  # pyo3-panics zijn BaseException, geen Exception
+        conv = shutil.which("convert") or shutil.which("magick")
+        if not conv:
+            raise
+        norm = os.path.join(os.path.dirname(src), "normalised.png")
+        subprocess.run([conv, src, "-alpha", "on", "png:" + norm],
+                       check=True, capture_output=True, timeout=120)
+        sys.stderr.write("[serve] VTracer-fallback via ImageMagick (%s)\n" % first)
+        _vtracer.convert_image_to_svg_py(norm, dst, **params)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -103,10 +128,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 dst = os.path.join(tmp, "out.svg")
                 with open(src, "wb") as fh:
                     fh.write(data)
-                _vtracer.convert_image_to_svg_py(src, dst, **params)
+                convert(src, dst, params)
                 with open(dst, "r", encoding="utf-8") as fh:
                     svg = fh.read()
         except BaseException as exc:  # pyo3-panics zijn BaseException, geen Exception
+            sys.stderr.write("[serve] conversie faalde (ext=%s, ctype=%s, %d bytes): %s\n"
+                             % (ext, self.headers.get("Content-Type"), len(data), exc))
             self.send_error(500, "conversie mislukt: %s" % exc)
             return
 
