@@ -531,6 +531,9 @@ function refreshProps(){
 
   propsEl.innerHTML = `
     <div class="field"><label>${el.dataset.bucket ? "Vlak" : (LABELS[t]||t)}</label></div>
+    <div class="field"><label>Naam</label>
+      <input type="text" id="p-name" value="${escapeAttr(elName(el))}" placeholder="${escapeAttr(defaultLabel(el))}" title="Naam in de export (id)" style="width:100%">
+    </div>
     <div class="field"><label>Vulling</label>
       <input type="color" id="p-fill" value="${toHex(fillNone ? "#000000" : fill)}">
       <label style="flex:0"><input type="checkbox" id="p-fillnone" ${fillNone?"checked":""}> geen</label>
@@ -563,6 +566,7 @@ function refreshProps(){
   const apply = (attr, val) => { if (val === null) el.removeAttribute(attr); else el.setAttribute(attr, val); refreshOverlay(); rebuildLayers(); };
   const commit = () => pushHistory();
 
+  on("p-name","change", e => { renameEl(el, e.target.value); rebuildLayers(); commit(); });
   on("p-fill","input", e => apply("fill", e.target.value));
   on("p-fill","change", commit);
   on("p-fillnone","change", e => { apply("fill", e.target.checked ? "none" : document.getElementById("p-fill").value); commit(); });
@@ -603,7 +607,7 @@ function rebuildLayers(){
     row.className = "layer" + (isSelected(el) ? " sel" : "");
     row.draggable = true;
     const hidden = el.getAttribute("visibility") === "hidden";
-    row.innerHTML = `<span class="name">${el.dataset.bucket ? "Vlak" : (LABELS[tag(el)]||tag(el))}</span>
+    row.innerHTML = `<span class="name">${escapeAttr(elName(el) || defaultLabel(el))}</span>
       <span class="mini" data-act="vis" title="Zichtbaar">${hidden?"◌":"●"}</span>
       <span class="mini" data-act="del" title="Verwijder">✕</span>`;
     row.addEventListener("click", e => {
@@ -614,6 +618,10 @@ function rebuildLayers(){
       } else {
         select(el);
       }
+    });
+    row.addEventListener("dblclick", e => {
+      if (e.target.dataset && e.target.dataset.act) return;
+      startRenameRow(row, el);
     });
     row.addEventListener("dragstart", e => { dragLayer = el; e.dataTransfer.effectAllowed = "move"; });
     row.addEventListener("dragover", e => {
@@ -642,6 +650,30 @@ function rebuildLayers(){
 }
 
 /* ---------- selection ---------- */
+function startRenameRow(row, el){
+  const span = row.querySelector(".name");
+  if (!span) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = elName(el);
+  input.placeholder = defaultLabel(el);
+  input.style.width = "100%";
+  input.style.minWidth = "0";
+  span.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const commit = () => {
+    if (done) return; done = true;
+    renameEl(el, input.value);
+    rebuildLayers(); refreshProps(); pushHistory();
+  };
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter"){ e.preventDefault(); commit(); }
+    else if (e.key === "Escape"){ e.preventDefault(); done = true; rebuildLayers(); }
+  });
+  input.addEventListener("blur", commit);
+  input.addEventListener("click", e => e.stopPropagation());
+}
 function isSelected(el){ return selection.includes(el); }
 function setSelection(arr){
   selection = arr.filter((el, i) => el && arr.indexOf(el) === i);
@@ -650,6 +682,26 @@ function setSelection(arr){
   refreshOverlay();
 }
 function select(el){ setSelection(el ? [el] : []); }
+
+/* ---------- namen van vormen ---------- */
+function defaultLabel(el){ return el.dataset.bucket ? "Vlak" : (LABELS[tag(el)] || tag(el)); }
+function elName(el){ return el.getAttribute("id") || ""; }
+function sanitiseId(name){
+  let s = String(name).trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9_:.\-]/g, "");
+  if (!s) return "";
+  if (!/^[A-Za-z_]/.test(s)) s = "p_" + s;
+  return s;
+}
+function renameEl(el, name){
+  const base = sanitiseId(name);
+  if (!base){ el.removeAttribute("id"); return ""; }
+  const taken = new Set();
+  stage.querySelectorAll("[id]").forEach(n => { if (n !== el) taken.add(n.id); });
+  let n = base, i = 1;
+  while (taken.has(n)) n = base + "_" + (++i);
+  el.setAttribute("id", n);
+  return n;
+}
 
 /* ---------- volgorde (z-order) ---------- */
 function applyOrder(arr){
@@ -1464,6 +1516,7 @@ function loadSVG(text){
 function buildExportSVG(){
   const clone = stage.cloneNode(true);
   clone.querySelectorAll("#overlay").forEach(n => n.remove());
+  clone.removeAttribute("id");
   clone.setAttribute("xmlns", NS);
   clone.setAttribute("width", docVB.w);
   clone.setAttribute("height", docVB.h);
