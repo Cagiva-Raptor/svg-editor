@@ -88,6 +88,7 @@
   <button id="btn-open" class="ghost" title="Open SVG-bestand" aria-label="Open SVG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
   <button id="btn-paste" class="ghost" title="SVG-broncode plakken" aria-label="Plak SVG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1z"/><path d="M8 6H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2"/></svg></button>
   <input type="file" id="file" accept=".svg,image/svg+xml" hidden>
+  <input type="text" id="doc-name" value="ontwerp" placeholder="bestandsnaam" title="Bestandsnaam voor export" aria-label="Bestandsnaam" style="width:130px">
   <button id="btn-svg" class="ghost" title="Exporteren als SVG" aria-label="Export SVG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
   <button id="btn-png" class="ghost" title="Exporteren als PNG" aria-label="Export PNG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
 </header>
@@ -815,13 +816,20 @@ document.getElementById("btn-new").onclick = () => {
   stageDefs.innerHTML = "";
   selected = null;
   setViewBox("0 0 800 600");
+  document.getElementById("doc-name").value = "ontwerp";
   rebuildLayers(); refreshProps(); refreshOverlay();
 };
 
 document.getElementById("btn-open").onclick = () => document.getElementById("file").click();
+function nameFromFile(f){
+  if (!f) return;
+  const n = f.name.replace(/\.svgz?$/i, "").replace(/[\/\\:*?"<>|]/g, "_").trim();
+  if (n) document.getElementById("doc-name").value = n;
+}
 document.getElementById("file").addEventListener("change", e => {
   const f = e.target.files[0];
   if (!f) return;
+  nameFromFile(f);
   const r = new FileReader();
   r.onload = () => loadSVG(r.result);
   r.readAsText(f);
@@ -869,6 +877,7 @@ canvasEl.addEventListener("drop", e => {
   e.preventDefault();
   const f = e.dataTransfer.files && e.dataTransfer.files[0];
   if (!f){ setStatus("Sleep een .svg-bestand hierheen"); return; }
+  nameFromFile(f);
   const r = new FileReader();
   r.onload = () => loadSVG(r.result);
   r.readAsText(f);
@@ -1019,10 +1028,14 @@ function download(blob, name){
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+function currentName(){
+  const raw = (document.getElementById("doc-name").value || "").trim();
+  return raw.replace(/[\/\\:*?"<>|]/g, "_") || "ontwerp";
+}
 function exportSVG(){
   const s = buildExportSVG();
-  download(new Blob([s], {type:"image/svg+xml"}), "ontwerp.svg");
-  setStatus("SVG geëxporteerd");
+  download(new Blob([s], {type:"image/svg+xml"}), currentName() + ".svg");
+  setStatus("SVG geëxporteerd als " + currentName() + ".svg");
 }
 function exportPNG(){
   const s = buildExportSVG();
@@ -1037,7 +1050,7 @@ function exportPNG(){
     const ctx = cv.getContext("2d");
     ctx.drawImage(img, 0, 0, cv.width, cv.height);
     URL.revokeObjectURL(url);
-    cv.toBlob(b => { download(b, "ontwerp.png"); setStatus("PNG geëxporteerd"); });
+    cv.toBlob(b => { download(b, currentName() + ".png"); setStatus("PNG geëxporteerd als " + currentName() + ".png"); });
   };
   img.onerror = () => { URL.revokeObjectURL(url); setStatus("PNG-export mislukt"); };
   img.src = url;
