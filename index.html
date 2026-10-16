@@ -556,6 +556,11 @@ function refreshProps(){
     </div>
     <div class="field"><label>Grootte</label>
       <input type="number" id="p-fs" min="1" value="${el.getAttribute("font-size") || 16}">
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button id="p-bold" class="ghost ${textStyleOn(el,"font-weight")?"active":""}" style="font-weight:700" title="Vet (Ctrl+B)">B</button>
+      <button id="p-italic" class="ghost ${textStyleOn(el,"font-style")?"active":""}" style="font-style:italic" title="Cursief (Ctrl+I)">I</button>
+      <button id="p-underline" class="ghost ${textStyleOn(el,"text-decoration")?"active":""}" style="text-decoration:underline" title="Onderstreept (Ctrl+U)">U</button>
     </div>` : ""}
     <div class="row" style="margin-top:10px">
       <button id="p-start" class="ghost" title="Helemaal naar achter">⤓ Achteraan</button>
@@ -582,6 +587,9 @@ function refreshProps(){
   on("p-text","change", commit);
   on("p-fs","input", e => apply("font-size", e.target.value));
   on("p-fs","change", commit);
+  on("p-bold","click", () => toggleTextStyle(selection[0], "font-weight"));
+  on("p-italic","click", () => toggleTextStyle(selection[0], "font-style"));
+  on("p-underline","click", () => toggleTextStyle(selection[0], "text-decoration"));
   wireGeometry(el, commit);
   wireReorder();
 }
@@ -596,6 +604,23 @@ function toHex(c){
   return "#000000";
 }
 function escapeAttr(s){ return String(s).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch])); }
+
+/* ---------- tekststijlen ---------- */
+function textStyleOn(el, attr){
+  const v = (el.getAttribute(attr) || "").toLowerCase().trim();
+  if (attr === "font-weight") return v === "bold" || v === "bolder" || parseInt(v, 10) >= 600;
+  if (attr === "font-style") return v === "italic" || v === "oblique";
+  if (attr === "text-decoration") return v.includes("underline");
+  return false;
+}
+function toggleTextStyle(el, attr){
+  if (!el || tag(el) !== "text"){ setStatus("Selecteer een tekst"); return; }
+  const on = textStyleOn(el, attr);
+  if (attr === "font-weight") el.setAttribute("font-weight", on ? "normal" : "bold");
+  else if (attr === "font-style") el.setAttribute("font-style", on ? "normal" : "italic");
+  else el.setAttribute("text-decoration", on ? "none" : "underline");
+  refreshProps(); refreshOverlay(); pushHistory();
+}
 
 /* ---------- layers ---------- */
 function rebuildLayers(){
@@ -1580,6 +1605,12 @@ function exportPNG(){
 /* ---------- keyboard ---------- */
 document.addEventListener("keydown", e => {
   const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && (k === "b" || k === "i" || k === "u") && selection.some(el => tag(el) === "text")){
+    e.preventDefault();
+    toggleTextStyle(selection.find(el => tag(el) === "text"), k === "b" ? "font-weight" : k === "i" ? "font-style" : "text-decoration");
+    return;
+  }
   if (inField) return;
   if (e.key === "Delete" || e.key === "Backspace"){ e.preventDefault(); deleteSelected(); return; }
   if (e.key === "Escape"){ pickingColor = false; canvasEl.style.cursor = ""; select(null); refreshOverlay(); return; }
