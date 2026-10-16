@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVG Editor</title>
+<style>
+  :root{
+    --bg:#1e1f24; --panel:#26272e; --panel2:#2d2f37; --line:#3a3c46;
+    --text:#e6e7ea; --muted:#9a9daa; --accent:#4c8dff; --danger:#e05a5a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg);color:var(--text);display:flex;flex-direction:column;overflow:hidden;
+  }
+  header{
+    display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+    padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);
+  }
+  header .sep{width:1px;height:22px;background:var(--line);margin:0 4px}
+  button,select,input[type=text],input[type=number]{
+    background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:5px 9px;font:inherit;cursor:pointer;
+  }
+  button:hover{border-color:#565866;background:#34363f}
+  button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.ghost{background:transparent}
+  input[type=color]{width:34px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none;cursor:pointer}
+  main{flex:1;display:grid;grid-template-columns:180px 1fr 240px;min-height:0}
+  .side{background:var(--panel);overflow:auto;padding:10px}
+  .side.left{border-right:1px solid var(--line)}
+  .side.right{border-left:1px solid var(--line)}
+  h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  #canvas{position:relative;overflow:hidden;background:
+    conic-gradient(#202127 25%,#282a31 0 50%,#202127 0 75%,#282a31 0) 0 0/24px 24px}
+  #stage,#overlay{position:absolute;inset:0;width:100%;height:100%}
+  #overlay{pointer-events:none}
+  .handle{fill:#fff;stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke;pointer-events:all;cursor:pointer}
+  .rot-handle{fill:var(--accent);stroke:#fff}
+  .sel-outline{fill:none;stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}
+  .sel-line{stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}
+  .layer{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;cursor:pointer;margin-bottom:2px}
+  .layer:hover{background:var(--panel2)}
+  .layer.sel{background:var(--accent);color:#fff}
+  .layer .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .layer .mini{opacity:.8;font-size:11px;cursor:pointer;padding:0 2px}
+  .field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .field label{flex:0 0 70px;color:var(--muted)}
+  .field input[type=number]{width:100%}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .hint{color:var(--muted);font-size:11px;margin-top:10px}
+  .empty{color:var(--muted);font-size:12px}
+  footer{background:var(--panel);border-top:1px solid var(--line);padding:5px 10px;color:var(--muted);font-size:11px;display:flex;gap:16px}
+  dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;max-width:min(680px,90vw)}
+  dialog textarea{width:100%;height:220px;background:#1b1c21;color:var(--text);border:1px solid var(--line);border-radius:6px;font:12px/1.4 ui-monospace,monospace;padding:8px}
+</style>
+</head>
+<body>
+
+<header>
+  <strong style="margin-right:6px">SVG&nbsp;Editor</strong>
+  <button id="tool-select" class="active" title="Selecteren (V)">Selecteren</button>
+  <button id="tool-rect" title="Rechthoek (R)">Rechthoek</button>
+  <button id="tool-ellipse" title="Ellipse (E)">Ellipse</button>
+  <button id="tool-line" title="Lijn (L)">Lijn</button>
+  <button id="tool-path" title="Potlood (P)">Potlood</button>
+  <button id="tool-text" title="Tekst (T)">Tekst</button>
+  <div class="sep"></div>
+  <button id="undo" title="Ongedaan (Ctrl+Z)">Undo</button>
+  <button id="redo" title="Opnieuw (Ctrl+Y)">Redo</button>
+  <button id="dup" title="Dupliceren (Ctrl+D)">Dupliceer</button>
+  <button id="del" title="Verwijderen (Del)">Verwijder</button>
+  <div class="sep"></div>
+  <button id="btn-new" class="ghost">Nieuw</button>
+  <button id="btn-open" class="ghost">Open SVG…</button>
+  <button id="btn-paste" class="ghost">Plak SVG…</button>
+  <input type="file" id="file" accept=".svg,image/svg+xml" hidden>
+  <button id="btn-svg" class="ghost">Export SVG</button>
+  <button id="btn-png" class="ghost">Export PNG</button>
+</header>
+
+<main>
+  <aside class="side left">
+    <h3>Lagen</h3>
+    <div id="layers"></div>
+  </aside>
+
+  <section id="canvas">
+    <svg id="stage" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet">
+      <defs id="stage-defs"></defs>
+      <g id="content"></g>
+    </svg>
+    <svg id="overlay" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet"></svg>
+  </section>
+
+  <aside class="side right">
+    <h3>Eigenschappen</h3>
+    <div id="props">
+      <p class="empty">Niets geselecteerd.</p>
+    </div>
+    <h3 style="margin-top:16px">Document</h3>
+    <div class="field">
+      <label>viewBox</label>
+      <input type="text" id="vb" value="0 0 800 600" style="width:100%">
+    </div>
+    <div class="field">
+      <label>Kleur alles</label>
+      <input type="color" id="doc-color" value="#4c8dff">
+    </div>
+    <div class="row">
+      <button id="doc-fill" class="ghost">Alle vullingen</button>
+      <button id="doc-stroke" class="ghost">Alle randen</button>
+    </div>
+    <p class="hint">V: selecteren · R/E/L/P/T: tekenen · Shift bij hoekpunt = gelijkmatig · Del: verwijderen · Ctrl+Z/Y: undo/redo</p>
+  </aside>
+</main>
+
+<footer>
+  <span id="status">Klaar</span>
+  <span id="selinfo"></span>
+</footer>
+
+<dialog id="paste-dialog">
+  <form method="dialog" style="display:flex;flex-direction:column;gap:10px">
+    <h3 style="margin:0">SVG-broncode plakken</h3>
+    <textarea id="paste-area" placeholder="&lt;svg …&gt;…&lt;/svg&gt;"></textarea>
+    <div class="row" style="justify-content:flex-end">
+      <button value="cancel" class="ghost">Annuleren</button>
+      <button id="paste-ok" value="ok" class="active">Inladen</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(function(){
+"use strict";
+
+const NS = "http://www.w3.org/2000/svg";
+const stage   = document.getElementById("stage");
+const overlay = document.getElementById("overlay");
+const content = document.getElementById("content");
+const stageDefs = document.getElementById("stage-defs");
+const layersEl = document.getElementById("layers");
+const propsEl  = document.getElementById("props");
+const statusEl = document.getElementById("status");
+const selInfo  = document.getElementById("selinfo");
+const vbInput  = document.getElementById("vb");
+
+const SHAPES = new Set(["path","rect","circle","ellipse","line","polyline","polygon","text","image"]);
+const LABELS = {path:"Pad",rect:"Rechthoek",circle:"Cirkel",ellipse:"Ellipse",line:"Lijn",polyline:"Polylijn",polygon:"Veelhoek",text:"Tekst",image:"Afbeelding"};
+const INHERIT = ["fill","fill-rule","fill-opacity","stroke","stroke-width","stroke-linecap","stroke-linejoin","stroke-miterlimit","stroke-dasharray","stroke-opacity","opacity","color","font-family","font-size","font-weight","text-anchor"];
+const PRESENT = new Set(INHERIT);
+
+let uid = 0;
+let tool = "select";
+let selected = null;
+let quads = [];            // overlay handles
+let history = [];
+let future = [];
+let clipboard = null;
+
+/* ---------- DOM helpers ---------- */
+const svgEl = (t) => document.createElementNS(NS, t);
+function nextId(){ return "el" + (++uid); }
+function tag(el){ return el.tagName.toLowerCase(); }
+
+function getMatrix(el){
+  const bv = el.transform.baseVal;
+  if (!bv || bv.numberOfItems === 0) return new DOMMatrix();
+  let c = null;
+  try { c = bv.consolidate(); } catch(e){}
+  if (!c) return new DOMMatrix();
+  const m = c.matrix;
+  return new DOMMatrix([m.a, m.b, m.c, m.d, m.e, m.f]);
+}
+function setMatrix(el, M){
+  el.setAttribute("transform", `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`);
+}
+function localToUser(el, p){ return new DOMPoint(p.x, p.y).matrixTransform(getMatrix(el)); }
+function toUser(evt){
+  const m = overlay.getScreenCTM().inverse();
+  return new DOMPoint(evt.clientX, evt.clientY).matrixTransform(m);
+}
+function bboxOf(el){
+  try {
+    const b = el.getBBox();
+    if (b.width === 0 && b.height === 0) return {x:0,y:0,w:1,h:1};
+    return {x:b.x, y:b.y, w:b.width, h:b.height};
+  } catch(e){ return {x:0,y:0,w:1,h:1}; }
+}
+
+/* ---------- history ---------- */
+function snapshot(){ return content.innerHTML; }
+function pushHistory(){
+  history.push(snapshot());
+  if (history.length > 100) history.shift();
+  future.length = 0;
+}
+function restore(html){
+  const id = selected ? selected.dataset.id : null;
+  content.innerHTML = html;
+  selected = id ? content.querySelector(`[data-id="${id}"]`) : null;
+  rebuildLayers(); refreshProps(); refreshOverlay();
+}
+function undo(){ if(history.length<1) return; future.push(snapshot()); restore(history.pop()); setStatus("Undo"); }
+function redo(){ if(future.length<1) return; history.push(snapshot()); restore(future.pop()); setStatus("Redo"); }
+
+function setStatus(t){ statusEl.textContent = t; }
+
+/* ---------- selection overlay ---------- */
+function refreshOverlay(){
+  overlay.innerHTML = "";
+  quads = [];
+  if (!selected) { selInfo.textContent = ""; return; }
+  const b = bboxOf(selected);
+  const M = getMatrix(selected);
+  const corners = [
+    {x:b.x,       y:b.y},
+    {x:b.x+b.w,   y:b.y},
+    {x:b.x+b.w,   y:b.y+b.h},
+    {x:b.x,       y:b.y+b.h}
+  ].map(p => new DOMPoint(p.x,p.y).matrixTransform(M));
+
+  const isLine = tag(selected) === "line";
+  if (isLine){
+    const p1 = localToUser(selected, {x:+selected.getAttribute("x1"), y:+selected.getAttribute("y1")});
+    const p2 = localToUser(selected, {x:+selected.getAttribute("x2"), y:+selected.getAttribute("y2")});
+    const ln = svgEl("line");
+    ln.setAttribute("x1",p1.x); ln.setAttribute("y1",p1.y);
+    ln.setAttribute("x2",p2.x); ln.setAttribute("y2",p2.y);
+    ln.setAttribute("class","sel-line");
+    overlay.appendChild(ln);
+    [[p1,"h1"],[p2,"h2"]].forEach(([p,id])=>{
+      overlay.appendChild(makeHandle(p.x,p.y,id,"square"));
+    });
+  } else {
+    const poly = svgEl("polygon");
+    poly.setAttribute("points", corners.map(p=>`${p.x},${p.y}`).join(" "));
+    poly.setAttribute("class","sel-outline");
+    overlay.appendChild(poly);
+
+    const cx = (corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4;
+    const cy = (corners[0].y+corners[1].y+corners[2].y+corners[3].y)/4;
+    const mid01 = {x:(corners[0].x+corners[1].x)/2, y:(corners[0].y+corners[1].y)/2};
+    const rot = {x: cx + (mid01.x-cx)*1.35, y: cy + (mid01.y-cy)*1.35};
+    const stem = svgEl("line");
+    stem.setAttribute("x1",mid01.x); stem.setAttribute("y1",mid01.y);
+    stem.setAttribute("x2",rot.x);   stem.setAttribute("y2",rot.y);
+    stem.setAttribute("class","sel-line");
+    overlay.appendChild(stem);
+    overlay.appendChild(makeHandle(rot.x,rot.y,"rot","circle"));
+
+    [["nw",corners[0]],["ne",corners[1]],["se",corners[2]],["sw",corners[3]]]
+      .forEach(([id,p]) => overlay.appendChild(makeHandle(p.x,p.y,id,"square")));
+  }
+  const t = LABELS[tag(selected)] || tag(selected);
+  selInfo.textContent = `${t}  ·  x=${Math.round(b.x)} y=${Math.round(b.y)} w=${Math.round(b.w)} h=${Math.round(b.h)}`;
+}
+function handleSize(){
+  const vb = stage.viewBox.baseVal;
+  const s = Math.max(vb.width, vb.height);
+  return s / 55;
+}
+function makeHandle(x,y,id,kind){
+  const s = handleSize();
+  let h;
+  if (kind === "circle"){
+    h = svgEl("circle");
+    h.setAttribute("cx",x); h.setAttribute("cy",y); h.setAttribute("r", s*0.7);
+    h.setAttribute("class","handle rot-handle");
+  } else {
+    h = svgEl("rect");
+    h.setAttribute("x", x-s/2); h.setAttribute("y", y-s/2);
+    h.setAttribute("width", s); h.setAttribute("height", s);
+    h.setAttribute("class","handle");
+  }
+  h.dataset.handle = id;
+  h.dataset.hx = x; h.dataset.hy = y;
+  return h;
+}
+
+/* ---------- properties panel ---------- */
+function refreshProps(){
+  if (!selected){ propsEl.innerHTML = '<p class="empty">Niets geselecteerd.</p>'; return; }
+  const el = selected;
+  const fill = el.getAttribute("fill");
+  const stroke = el.getAttribute("stroke");
+  const t = tag(el);
+  const isText = t === "text";
+  const fillNone = fill === "none" || fill === null;
+  const strokeNone = stroke === "none" || stroke === null;
+
+  propsEl.innerHTML = `
+    <div class="field"><label>${LABELS[t]||t}</label></div>
+    <div class="field"><label>Vulling</label>
+      <input type="color" id="p-fill" value="${toHex(fillNone ? "#000000" : fill)}">
+      <label style="flex:0"><input type="checkbox" id="p-fillnone" ${fillNone?"checked":""}> geen</label>
+    </div>
+    <div class="field"><label>Rand</label>
+      <input type="color" id="p-stroke" value="${toHex(strokeNone ? "#000000" : stroke)}">
+      <label style="flex:0"><input type="checkbox" id="p-strokenone" ${strokeNone?"checked":""}> geen</label>
+    </div>
+    <div class="field"><label>Randdikte</label>
+      <input type="number" id="p-sw" min="0" step="0.5" value="${el.getAttribute("stroke-width") || 1}">
+    </div>
+    <div class="field"><label>Opacity</label>
+      <input type="number" id="p-op" min="0" max="1" step="0.05" value="${el.getAttribute("opacity") ?? 1}">
+    </div>
+    ${isText ? `
+    <div class="field"><label>Tekst</label>
+      <input type="text" id="p-text" value="${escapeAttr(el.textContent)}" style="width:100%">
+    </div>
+    <div class="field"><label>Grootte</label>
+      <input type="number" id="p-fs" min="1" value="${el.getAttribute("font-size") || 16}">
+    </div>` : ""}
+    <div class="row" style="margin-top:10px">
+      <button id="p-back" class="ghost">Naar achter</button>
+      <button id="p-front" class="ghost">Naar voor</button>
+    </div>
+  `;
+  const on = (id, ev, fn) => { const n = document.getElementById(id); if(n) n.addEventListener(ev, fn); };
+  const apply = (attr, val) => { if (val === null) el.removeAttribute(attr); else el.setAttribute(attr, val); refreshOverlay(); rebuildLayers(); };
+  const commit = () => pushHistory();
+
+  on("p-fill","input", e => apply("fill", e.target.value));
+  on("p-fill","change", commit);
+  on("p-fillnone","change", e => { apply("fill", e.target.checked ? "none" : document.getElementById("p-fill").value); commit(); });
+  on("p-stroke","input", e => apply("stroke", e.target.value));
+  on("p-stroke","change", commit);
+  on("p-strokenone","change", e => { apply("stroke", e.target.checked ? "none" : document.getElementById("p-stroke").value); commit(); });
+  on("p-sw","input", e => apply("stroke-width", e.target.value));
+  on("p-sw","change", commit);
+  on("p-op","input", e => apply("opacity", e.target.value === "1" ? null : e.target.value));
+  on("p-op","change", commit);
+  on("p-text","input", e => { el.textContent = e.target.value; refreshOverlay(); });
+  on("p-text","change", commit);
+  on("p-fs","input", e => apply("font-size", e.target.value));
+  on("p-fs","change", commit);
+  on("p-back","click", () => { content.insertBefore(el, content.firstChild); rebuildLayers(); commit(); });
+  on("p-front","click", () => { content.appendChild(el); rebuildLayers(); commit(); });
+}
+function toHex(c){
+  if (!c || c === "none") return "#000000";
+  if (c[0] === "#") return c.length === 4 ? "#"+c[1]+c[1]+c[2]+c[2]+c[3]+c[3] : c.slice(0,7);
+  const m = c.match(/rgba?\(([^)]+)\)/);
+  if (m){
+    const [r,g,b] = m[1].split(",").map(Number);
+    return "#" + [r,g,b].map(v=>Math.max(0,Math.min(255,v)).toString(16).padStart(2,"0")).join("");
+  }
+  return "#000000";
+}
+function escapeAttr(s){ return String(s).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch])); }
+
+/* ---------- layers ---------- */
+function rebuildLayers(){
+  layersEl.innerHTML = "";
+  const kids = [...content.children];
+  if (!kids.length){ layersEl.innerHTML = '<p class="empty">Nog geen vormen.</p>'; return; }
+  for (let i = kids.length - 1; i >= 0; i--){
+    const el = kids[i];
+    const row = document.createElement("div");
+    row.className = "layer" + (el === selected ? " sel" : "");
+    const hidden = el.getAttribute("visibility") === "hidden";
+    row.innerHTML = `<span class="name">${LABELS[tag(el)]||tag(el)}</span>
+      <span class="mini" data-act="vis" title="Zichtbaar">${hidden?"◌":"●"}</span>
+      <span class="mini" data-act="del" title="Verwijder">✕</span>`;
+    row.addEventListener("click", e => {
+      if (e.target.dataset.act === "vis"){ el.setAttribute("visibility", hidden ? "visible" : "hidden"); rebuildLayers(); return; }
+      if (e.target.dataset.act === "del"){ el.remove(); if (selected===el) selected=null; rebuildLayers(); refreshProps(); refreshOverlay(); pushHistory(); return; }
+      select(el);
+    });
+    layersEl.appendChild(row);
+  }
+}
+
+/* ---------- selection ---------- */
+function select(el){
+  selected = el;
+  rebuildLayers();
+  refreshProps();
+  refreshOverlay();
+}
+
+/* ---------- create shapes ---------- */
+function newShape(kind){
+  const el = svgEl(kind);
+  el.dataset.id = nextId();
+  el.setAttribute("fill", kind === "line" || kind === "path" ? "none" : "#4c8dff");
+  el.setAttribute("stroke", "#1e1f24");
+  el.setAttribute("stroke-width", "2");
+  return el;
+}
+
+/* ---------- gestures ---------- */
+let gesture = null;
+
+overlay.addEventListener("pointerdown", onOverlayDown);
+stage.addEventListener("pointerdown", onStageDown);
+
+function onStageDown(e){
+  if (tool !== "select"){ startDraw(e); return; }
+  if (e.target === stage) { select(null); refreshOverlay(); return; }
+  const el = e.target.closest && e.target.closest("[data-id]");
+  if (!el) return;
+  select(el);
+  startMove(e, el);
+}
+
+function onOverlayDown(e){
+  if (tool !== "select") return;
+  const h = e.target;
+  if (!h.dataset || !h.dataset.handle) return;
+  e.preventDefault();
+  if (!selected) return;
+  if (h.dataset.handle === "rot") startRotate(e);
+  else if (h.dataset.handle === "h1") startLineEnd(e, "x1","y1");
+  else if (h.dataset.handle === "h2") startLineEnd(e, "x2","y2");
+  else startScale(e, h.dataset.handle);
+}
+
+function startMove(e, el){
+  const start = toUser(e);
+  const M0 = getMatrix(el);
+  gesture = {type:"move", start, M0, el};
+  bindGesture();
+}
+function startScale(e, corner){
+  const b = bboxOf(selected);
+  const M0 = getMatrix(selected);
+  const map = {
+    nw:{c:{x:b.x,y:b.y},      a:{x:b.x+b.w,y:b.y+b.h}},
+    ne:{c:{x:b.x+b.w,y:b.y},  a:{x:b.x,y:b.y+b.h}},
+    se:{c:{x:b.x+b.w,y:b.y+b.h}, a:{x:b.x,y:b.y}},
+    sw:{c:{x:b.x,y:b.y+b.h},  a:{x:b.x+b.w,y:b.y}}
+  }[corner];
+  gesture = {type:"scale", el:selected, M0, b, cornerLocal:map.c, anchorLocal:map.a, shift:e.shiftKey};
+  bindGesture();
+}
+function startRotate(e){
+  const b = bboxOf(selected);
+  const center = {x:b.x+b.w/2, y:b.y+b.h/2};
+  const M0 = getMatrix(selected);
+  const cU = new DOMPoint(center.x,center.y).matrixTransform(M0);
+  const p0 = toUser(e);
+  gesture = {type:"rotate", el:selected, M0, center, cU, a0:Math.atan2(p0.y-cU.y, p0.x-cU.x)};
+  bindGesture();
+}
+function startLineEnd(e, ax, ay){
+  const el = selected;
+  gesture = {type:"lineend", el, ax, ay, M0:getMatrix(el)};
+  bindGesture();
+}
+function startDraw(e){
+  const p = toUser(e);
+  const kind = tool === "rect" ? "rect" : tool === "ellipse" ? "ellipse" : "line";
+  let el;
+  if (tool === "text"){
+    el = newShape("text");
+    el.textContent = "Tekst";
+    el.setAttribute("font-size", Math.round(stage.viewBox.baseVal.width/25));
+    el.setAttribute("fill", "#e6e7ea");
+    el.setAttribute("stroke", "none");
+    el.setAttribute("x", p.x); el.setAttribute("y", p.y);
+    el.setAttribute("transform", `matrix(1 0 0 1 0 0)`);
+    content.appendChild(el); select(el); pushHistory();
+    return;
+  }
+  if (tool === "path"){
+    el = newShape("path");
+    el.setAttribute("d", `M ${p.x} ${p.y}`);
+    el.setAttribute("stroke", "#e6e7ea");
+    content.appendChild(el);
+    select(el);
+    gesture = {type:"drawpath", el, pts:[[p.x,p.y]]};
+    bindGesture();
+    return;
+  }
+  el = newShape(kind);
+  if (kind === "rect"){ el.setAttribute("x",p.x); el.setAttribute("y",p.y); el.setAttribute("width",0); el.setAttribute("height",0); }
+  if (kind === "ellipse"){ el.setAttribute("cx",p.x); el.setAttribute("cy",p.y); el.setAttribute("rx",0); el.setAttribute("ry",0); }
+  if (kind === "line"){ el.setAttribute("x1",p.x); el.setAttribute("y1",p.y); el.setAttribute("x2",p.x); el.setAttribute("y2",p.y); }
+  content.appendChild(el);
+  select(el);
+  gesture = {type:"draw", el, kind, start:p};
+  bindGesture();
+}
+
+function bindGesture(){
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+function onMove(e){
+  if (!gesture) return;
+  const p = toUser(e);
+  const g = gesture;
+  if (g.type === "move"){
+    const dx = p.x - g.start.x, dy = p.y - g.start.y;
+    const M = new DOMMatrix().translate(dx,dy).multiply(g.M0);
+    setMatrix(g.el, M);
+  } else if (g.type === "scale"){
+    const M0 = g.M0;
+    const a = M0.a, b = M0.b, c = M0.c, d = M0.d;
+    const det = a*d - b*c;
+    if (Math.abs(det) < 1e-9) return;
+    const anchorU = new DOMPoint(g.anchorLocal.x, g.anchorLocal.y).matrixTransform(M0);
+    const vx = p.x - anchorU.x, vy = p.y - anchorU.y;
+    let dx = ( d*vx - c*vy)/det;
+    let dy = (-b*vx + a*vy)/det;
+    const ox = g.cornerLocal.x - g.anchorLocal.x;
+    const oy = g.cornerLocal.y - g.anchorLocal.y;
+    let sx = Math.abs(ox) > 1e-6 ? dx/ox : 1;
+    let sy = Math.abs(oy) > 1e-6 ? dy/oy : 1;
+    if (g.shift || e.shiftKey){ const s = (Math.abs(sx)+Math.abs(sy))/2; sx = Math.sign(sx||1)*s; sy = Math.sign(sy||1)*s; }
+    const S = new DOMMatrix()
+      .translate(g.anchorLocal.x, g.anchorLocal.y)
+      .scale(sx, sy)
+      .translate(-g.anchorLocal.x, -g.anchorLocal.y);
+    setMatrix(g.el, M0.multiply(S));
+  } else if (g.type === "rotate"){
+    const a1 = Math.atan2(p.y - g.cU.y, p.x - g.cU.x);
+    let deg = (a1 - g.a0) * 180/Math.PI;
+    if (e.shiftKey) deg = Math.round(deg/15)*15;
+    const R = new DOMMatrix()
+      .translate(g.center.x, g.center.y)
+      .rotate(deg)
+      .translate(-g.center.x, -g.center.y);
+    setMatrix(g.el, g.M0.multiply(R));
+  } else if (g.type === "draw"){
+    const s = g.start;
+    if (g.kind === "rect"){
+      const x = Math.min(s.x,p.x), y = Math.min(s.y,p.y);
+      g.el.setAttribute("x",x); g.el.setAttribute("y",y);
+      g.el.setAttribute("width", Math.abs(p.x-s.x)); g.el.setAttribute("height", Math.abs(p.y-s.y));
+    } else if (g.kind === "ellipse"){
+      g.el.setAttribute("cx",(s.x+p.x)/2); g.el.setAttribute("cy",(s.y+p.y)/2);
+      g.el.setAttribute("rx", Math.abs(p.x-s.x)/2); g.el.setAttribute("ry", Math.abs(p.y-s.y)/2);
+    } else if (g.kind === "line"){
+      g.el.setAttribute("x2",p.x); g.el.setAttribute("y2",p.y);
+    }
+  } else if (g.type === "drawpath"){
+    g.pts.push([p.x,p.y]);
+    g.el.setAttribute("d", "M " + g.pts.map(pt=>`${pt[0].toFixed(1)} ${pt[1].toFixed(1)}`).join(" L "));
+  } else if (g.type === "lineend"){
+    const local = new DOMPoint(p.x,p.y).matrixTransform(getMatrix(g.el).inverse());
+    g.el.setAttribute(g.ax, local.x);
+    g.el.setAttribute(g.ay, local.y);
+  }
+  refreshOverlay();
+}
+function onUp(){
+  if (!gesture) return;
+  const g = gesture;
+  gesture = null;
+  window.removeEventListener("pointermove", onMove);
+  window.removeEventListener("pointerup", onUp);
+  if (g.type === "draw" || g.type === "drawpath" || g.type === "lineend") pushHistory();
+  if (g.type === "move" || g.type === "scale" || g.type === "rotate") pushHistory();
+  rebuildLayers();
+  refreshProps();
+  refreshOverlay();
+}
+
+/* ---------- layer reorder buttons handled in props; delete/dup ---------- */
+function deleteSelected(){
+  if (!selected) return;
+  selected.remove();
+  selected = null;
+  rebuildLayers(); refreshProps(); refreshOverlay(); pushHistory();
+  setStatus("Verwijderd");
+}
+function duplicateSelected(){
+  if (!selected) return;
+  const clone = selected.cloneNode(true);
+  clone.dataset.id = nextId();
+  const M = getMatrix(selected).translate(20,20);
+  setMatrix(clone, M);
+  content.appendChild(clone);
+  select(clone);
+  pushHistory();
+  setStatus("Gedupliceerd");
+}
+
+/* ---------- tools ---------- */
+function setTool(t){
+  tool = t;
+  ["select","rect","ellipse","line","path","text"].forEach(n => {
+    document.getElementById("tool-"+n).classList.toggle("active", n === t);
+  });
+  overlay.style.pointerEvents = "none";
+  setStatus("Tool: " + t);
+}
+document.getElementById("tool-select").onclick  = () => setTool("select");
+document.getElementById("tool-rect").onclick    = () => setTool("rect");
+document.getElementById("tool-ellipse").onclick = () => setTool("ellipse");
+document.getElementById("tool-line").onclick    = () => setTool("line");
+document.getElementById("tool-path").onclick    = () => setTool("path");
+document.getElementById("tool-text").onclick    = () => setTool("text");
+
+/* ---------- toolbar ---------- */
+document.getElementById("undo").onclick = undo;
+document.getElementById("redo").onclick = redo;
+document.getElementById("del").onclick = deleteSelected;
+document.getElementById("dup").onclick = duplicateSelected;
+
+document.getElementById("btn-new").onclick = () => {
+  if (!confirm("Nieuw document? Huidige werk gaat verloren (undo kan tot 100 stappen terug).")) return;
+  pushHistory();
+  content.innerHTML = "";
+  stageDefs.innerHTML = "";
+  selected = null;
+  setViewBox("0 0 800 600");
+  rebuildLayers(); refreshProps(); refreshOverlay();
+};
+
+document.getElementById("btn-open").onclick = () => document.getElementById("file").click();
+document.getElementById("file").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => loadSVG(r.result);
+  r.readAsText(f);
+  e.target.value = "";
+});
+
+const pasteDialog = document.getElementById("paste-dialog");
+document.getElementById("btn-paste").onclick = () => {
+  document.getElementById("paste-area").value = "";
+  pasteDialog.showModal();
+};
+document.getElementById("paste-ok").onclick = () => {
+  const v = document.getElementById("paste-area").value.trim();
+  if (v) loadSVG(v);
+};
+
+document.getElementById("btn-svg").onclick = exportSVG;
+document.getElementById("btn-png").onclick = exportPNG;
+
+vbInput.addEventListener("change", () => { setViewBox(vbInput.value.trim()); refreshOverlay(); });
+
+/* ---------- global recolour ---------- */
+function applyGlobal(kind){
+  const c = document.getElementById("doc-color").value;
+  const kids = [...content.children];
+  if (!kids.length){ setStatus("Geen vormen om te kleuren"); return; }
+  kids.forEach(el => el.setAttribute(kind, c));
+  pushHistory();
+  rebuildLayers(); refreshProps(); refreshOverlay();
+  setStatus(`Kleur toegepast op ${kids.length} vorm(en)`);
+}
+document.getElementById("doc-fill").onclick = () => applyGlobal("fill");
+document.getElementById("doc-stroke").onclick = () => applyGlobal("stroke");
+
+/* ---------- drag & drop ---------- */
+const canvasEl = document.getElementById("canvas");
+["dragenter","dragover"].forEach(ev => canvasEl.addEventListener(ev, e => {
+  e.preventDefault();
+  canvasEl.style.outline = "2px solid var(--accent)";
+  canvasEl.style.outlineOffset = "-2px";
+}));
+["dragleave","drop"].forEach(ev => canvasEl.addEventListener(ev, () => {
+  canvasEl.style.outline = ""; canvasEl.style.outlineOffset = "";
+}));
+canvasEl.addEventListener("drop", e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f){ setStatus("Sleep een .svg-bestand hierheen"); return; }
+  const r = new FileReader();
+  r.onload = () => loadSVG(r.result);
+  r.readAsText(f);
+});
+
+/* ---------- load / viewbox ---------- */
+function setViewBox(vb){
+  stage.setAttribute("viewBox", vb);
+  overlay.setAttribute("viewBox", vb);
+  vbInput.value = vb;
+}
+function loadSVG(text){
+  let doc;
+  try { doc = new DOMParser().parseFromString(text, "image/svg+xml"); }
+  catch(e){ setStatus("Ongeldige SVG"); return; }
+  if (doc.querySelector("parsererror") || !doc.documentElement){ setStatus("Ongeldige SVG"); return; }
+  const src = doc.documentElement;
+  if (tag(src) !== "svg"){ setStatus("Geen <svg>-root gevonden"); return; }
+
+  pushHistory();
+
+  const vb = src.getAttribute("viewBox");
+  if (vb) setViewBox(vb);
+  else {
+    const w = parseFloat(src.getAttribute("width")) || 800;
+    const h = parseFloat(src.getAttribute("height")) || 600;
+    setViewBox(`0 0 ${w} ${h}`);
+  }
+
+  stageDefs.innerHTML = "";
+  const srcDefs = src.querySelector("defs");
+  if (srcDefs) [...srcDefs.children].forEach(n => stageDefs.appendChild(n.cloneNode(true)));
+
+  content.innerHTML = "";
+  uid = 0;
+  const leaves = [];
+  const rootInh = {};
+  INHERIT.forEach(a => { if (src.hasAttribute(a)) rootInh[a] = src.getAttribute(a); });
+  walk(src, new DOMMatrix(), rootInh);
+  function walk(node, ctm, inh){
+    for (const child of [...node.children]){
+      const t = tag(child);
+      if (t === "defs" || t === "style" || t === "title" || t === "desc" || t === "metadata") continue;
+      let m = ctm;
+      const bv = child.transform && child.transform.baseVal;
+      if (bv && bv.numberOfItems){
+        try {
+          const c = bv.consolidate();
+          if (c) m = ctm.multiply(new DOMMatrix([c.matrix.a,c.matrix.b,c.matrix.c,c.matrix.d,c.matrix.e,c.matrix.f]));
+        } catch(e){}
+      }
+      const nextInh = Object.assign({}, inh);
+      INHERIT.forEach(a => { if (child.hasAttribute(a)) nextInh[a] = child.getAttribute(a); });
+      if (t === "g" || t === "svg" || t === "a" || t === "switch"){ walk(child, m, nextInh); }
+      else if (SHAPES.has(t)){
+        const clone = child.cloneNode(true);
+        clone.removeAttribute("transform");
+        clone.dataset.id = nextId();
+        INHERIT.forEach(a => { if (!clone.hasAttribute(a) && nextInh[a] != null) clone.setAttribute(a, nextInh[a]); });
+        setMatrix(clone, m);
+        leaves.push(clone);
+      }
+    }
+  }
+  leaves.forEach(el => content.appendChild(el));
+  selected = null;
+  rebuildLayers(); refreshProps(); refreshOverlay();
+  setStatus(`Geladen: ${leaves.length} vorm(en)`);
+}
+
+/* ---------- export ---------- */
+function buildExportSVG(){
+  const clone = stage.cloneNode(true);
+  clone.querySelectorAll("#overlay").forEach(n => n.remove());
+  clone.setAttribute("xmlns", NS);
+  const vb = stage.getAttribute("viewBox");
+  clone.setAttribute("width", stage.viewBox.baseVal.width);
+  clone.setAttribute("height", stage.viewBox.baseVal.height);
+  if (vb) clone.setAttribute("viewBox", vb);
+  const c = clone.querySelector("#content");
+  if (c) c.removeAttribute("id");
+  const d = clone.querySelector("#stage-defs");
+  if (d) d.removeAttribute("id");
+  clone.querySelectorAll("[data-id]").forEach(n => n.removeAttribute("data-id"));
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
+}
+function download(blob, name){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function exportSVG(){
+  const s = buildExportSVG();
+  download(new Blob([s], {type:"image/svg+xml"}), "ontwerp.svg");
+  setStatus("SVG geëxporteerd");
+}
+function exportPNG(){
+  const s = buildExportSVG();
+  const vb = stage.viewBox.baseVal;
+  const scale = 2;
+  const img = new Image();
+  const svgBlob = new Blob([s], {type:"image/svg+xml;charset=utf-8"});
+  const url = URL.createObjectURL(svgBlob);
+  img.onload = () => {
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(vb.width*scale);
+    cv.height = Math.round(vb.height*scale);
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    URL.revokeObjectURL(url);
+    cv.toBlob(b => { download(b, "ontwerp.png"); setStatus("PNG geëxporteerd"); });
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); setStatus("PNG-export mislukt"); };
+  img.src = url;
+}
+
+/* ---------- keyboard ---------- */
+document.addEventListener("keydown", e => {
+  const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (inField) return;
+  if (e.key === "Delete" || e.key === "Backspace"){ e.preventDefault(); deleteSelected(); return; }
+  if (e.key === "Escape"){ select(null); refreshOverlay(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "z"){ e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "y"){ e.preventDefault(); redo(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "d"){ e.preventDefault(); duplicateSelected(); return; }
+  const keys = {v:"select", r:"rect", e:"ellipse", l:"line", p:"path", t:"text"};
+  if (keys[e.key.toLowerCase()]) setTool(keys[e.key.toLowerCase()]);
+});
+
+/* ---------- init ---------- */
+window.addEventListener("resize", refreshOverlay);
+rebuildLayers();
+setViewBox("0 0 800 600");
+pushHistory();
+setStatus("Klaar — open een SVG of teken een vorm.");
+})();
+</script>
+</body>
+</html>
