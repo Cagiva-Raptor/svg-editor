@@ -87,6 +87,13 @@
   <button id="btn-new" class="ghost" title="Nieuw document" aria-label="Nieuw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg></button>
   <button id="btn-open" class="ghost" title="Open SVG-bestand" aria-label="Open SVG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
   <button id="btn-paste" class="ghost" title="SVG-broncode plakken" aria-label="Plak SVG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1z"/><path d="M8 6H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2"/></svg></button>
+  <button id="btn-image" class="ghost" title="Afbeelding (JPG/PNG) importeren en omzetten naar SVG" aria-label="Afbeelding naar SVG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
+  <select id="img-preset" title="Tracer-preset" aria-label="Tracer-preset">
+    <option value="poster">Poster (kleur)</option>
+    <option value="bw">Zwart-wit</option>
+    <option value="photo">Foto</option>
+  </select>
+  <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp,image/bmp" hidden>
   <input type="file" id="file" accept=".svg,image/svg+xml" hidden>
   <input type="text" id="doc-name" value="ontwerp" placeholder="bestandsnaam" title="Bestandsnaam voor export" aria-label="Bestandsnaam" style="width:130px">
   <button id="btn-svg" class="ghost" title="Exporteren als SVG" aria-label="Export SVG"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
@@ -133,7 +140,8 @@
     </div>
     <p class="hint">Werkt niet? Zoom met het wiel, pan met midden-muis of spatie+slepen.<br>
     V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer (vul lege vlakken)</b> · Del: verwijderen<br>
-    Pijltjes: verplaatsen (Shift = 10, Ctrl = op het raster) · Ctrl+Z/Y: undo/redo</p>
+    Pijltjes: verplaatsen (Shift = 10, Ctrl = op het raster) · Ctrl+Z/Y: undo/redo<br>
+    JPG/PNG → SVG: sleep een afbeelding op het canvas of gebruik de afbeelding-knop (vereist serve.py).</p>
   </aside>
 </main>
 
@@ -836,6 +844,34 @@ document.getElementById("file").addEventListener("change", e => {
   e.target.value = "";
 });
 
+/* ---------- afbeelding -> SVG (VTracer via /convert) ---------- */
+async function importImage(file){
+  if (!file) return;
+  nameFromFile(file);
+  const preset = document.getElementById("img-preset").value;
+  setStatus("Afbeelding omzetten naar SVG…");
+  try {
+    const res = await fetch("/convert?preset=" + encodeURIComponent(preset), {
+      method: "POST",
+      headers: {"Content-Type": file.type || "application/octet-stream"},
+      body: file
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const svg = await res.text();
+    if (!/<svg[\s>]/i.test(svg)) throw new Error("geen SVG ontvangen");
+    loadSVG(svg);
+    setStatus("Afbeelding omgezet naar SVG (" + preset + ")");
+  } catch (err) {
+    setStatus("Conversie mislukt (" + err.message + ") — draait serve.py?");
+  }
+}
+document.getElementById("btn-image").onclick = () => document.getElementById("img-file").click();
+document.getElementById("img-file").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (f) importImage(f);
+  e.target.value = "";
+});
+
 const pasteDialog = document.getElementById("paste-dialog");
 document.getElementById("btn-paste").onclick = () => {
   document.getElementById("paste-area").value = "";
@@ -876,11 +912,15 @@ document.getElementById("doc-stroke").onclick = () => applyGlobal("stroke");
 canvasEl.addEventListener("drop", e => {
   e.preventDefault();
   const f = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (!f){ setStatus("Sleep een .svg-bestand hierheen"); return; }
+  if (!f){ setStatus("Sleep een .svg- of afbeeldingsbestand hierheen"); return; }
   nameFromFile(f);
-  const r = new FileReader();
-  r.onload = () => loadSVG(r.result);
-  r.readAsText(f);
+  if (/^image\//.test(f.type) && !/svg/i.test(f.type)){
+    importImage(f);
+  } else {
+    const r = new FileReader();
+    r.onload = () => loadSVG(r.result);
+    r.readAsText(f);
+  }
 });
 
 /* ---------- load / viewbox / zoom ---------- */
