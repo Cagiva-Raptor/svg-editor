@@ -41,6 +41,12 @@
   .rot-handle{fill:var(--accent);stroke:#fff}
   .sel-outline{fill:none;stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}
   .sel-line{stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}
+  #zoombar{position:absolute;left:10px;bottom:10px;display:flex;align-items:center;gap:4px;
+    background:rgba(38,39,46,.9);border:1px solid var(--line);border-radius:8px;padding:4px 6px;z-index:5}
+  #zoombar button{padding:2px 9px;line-height:1.2}
+  #zoombar #z-label{min-width:46px;text-align:center;color:var(--muted);font-variant-numeric:tabular-nums}
+  #canvas.panning{cursor:grabbing}
+  #canvas.pannable{cursor:grab}
   .layer{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;cursor:pointer;margin-bottom:2px}
   .layer:hover{background:var(--panel2)}
   .layer.sel{background:var(--accent);color:#fff}
@@ -93,6 +99,12 @@
       <g id="content"></g>
     </svg>
     <svg id="overlay" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet"></svg>
+    <div id="zoombar">
+      <button id="z-out" title="Uitzoomen">−</button>
+      <span id="z-label">100%</span>
+      <button id="z-in" title="Inzoomen">+</button>
+      <button id="z-fit" title="Passend maken">Fit</button>
+    </div>
   </section>
 
   <aside class="side right">
@@ -113,7 +125,8 @@
       <button id="doc-fill" class="ghost">Alle vullingen</button>
       <button id="doc-stroke" class="ghost">Alle randen</button>
     </div>
-    <p class="hint">V: selecteren · R/E/L/P/T: tekenen · Shift bij hoekpunt = gelijkmatig · Del: verwijderen · Ctrl+Z/Y: undo/redo</p>
+    <p class="hint">Werkt niet? Zoom met het wiel, pan met midden-muis of spatie+slepen.<br>
+    V: selecteren · R/E/L/P/T: tekenen · Del: verwijderen · Ctrl+Z/Y: undo/redo</p>
   </aside>
 </main>
 
@@ -140,6 +153,7 @@
 const NS = "http://www.w3.org/2000/svg";
 const stage   = document.getElementById("stage");
 const overlay = document.getElementById("overlay");
+const canvasEl = document.getElementById("canvas");
 const content = document.getElementById("content");
 const stageDefs = document.getElementById("stage-defs");
 const layersEl = document.getElementById("layers");
@@ -283,7 +297,7 @@ function makeHandle(x,y,id,kind){
 
 /* ---------- properties panel ---------- */
 function refreshProps(){
-  if (!selected){ propsEl.innerHTML = '<p class="empty">Niets geselecteerd.</p>'; return; }
+  if (!selected){ propsEl.innerHTML = '<p class="empty">Klik een vorm op het canvas om ze te bewerken, of gebruik <b>Kleur alles</b> hieronder.</p>'; return; }
   const el = selected;
   const fill = el.getAttribute("fill");
   const stroke = el.getAttribute("stroke");
@@ -400,6 +414,7 @@ overlay.addEventListener("pointerdown", onOverlayDown);
 stage.addEventListener("pointerdown", onStageDown);
 
 function onStageDown(e){
+  if (e.button === 1 || spaceDown){ e.preventDefault(); startPan(e); return; }
   if (tool !== "select"){ startDraw(e); return; }
   if (e.target === stage) { select(null); refreshOverlay(); return; }
   const el = e.target.closest && e.target.closest("[data-id]");
@@ -409,6 +424,7 @@ function onStageDown(e){
 }
 
 function onOverlayDown(e){
+  if (e.button === 1 || spaceDown){ e.preventDefault(); startPan(e); return; }
   if (tool !== "select") return;
   const h = e.target;
   if (!h.dataset || !h.dataset.handle) return;
@@ -459,7 +475,7 @@ function startDraw(e){
   if (tool === "text"){
     el = newShape("text");
     el.textContent = "Tekst";
-    el.setAttribute("font-size", Math.round(stage.viewBox.baseVal.width/25));
+    el.setAttribute("font-size", Math.round(docVB.w/25));
     el.setAttribute("fill", "#e6e7ea");
     el.setAttribute("stroke", "none");
     el.setAttribute("x", p.x); el.setAttribute("y", p.y);
@@ -546,6 +562,10 @@ function onMove(e){
     const local = new DOMPoint(p.x,p.y).matrixTransform(getMatrix(g.el).inverse());
     g.el.setAttribute(g.ax, local.x);
     g.el.setAttribute(g.ay, local.y);
+  } else if (g.type === "pan"){
+    view.x = g.startView.x - (e.clientX - g.startClient.x)/g.scale;
+    view.y = g.startView.y - (e.clientY - g.startClient.y)/g.scale;
+    applyView();
   }
   refreshOverlay();
 }
@@ -555,6 +575,7 @@ function onUp(){
   gesture = null;
   window.removeEventListener("pointermove", onMove);
   window.removeEventListener("pointerup", onUp);
+  canvasEl.classList.remove("panning");
   if (g.type === "draw" || g.type === "drawpath" || g.type === "lineend") pushHistory();
   if (g.type === "move" || g.type === "scale" || g.type === "rotate") pushHistory();
   rebuildLayers();
@@ -653,7 +674,6 @@ document.getElementById("doc-fill").onclick = () => applyGlobal("fill");
 document.getElementById("doc-stroke").onclick = () => applyGlobal("stroke");
 
 /* ---------- drag & drop ---------- */
-const canvasEl = document.getElementById("canvas");
 ["dragenter","dragover"].forEach(ev => canvasEl.addEventListener(ev, e => {
   e.preventDefault();
   canvasEl.style.outline = "2px solid var(--accent)";
@@ -671,12 +691,70 @@ canvasEl.addEventListener("drop", e => {
   r.readAsText(f);
 });
 
-/* ---------- load / viewbox ---------- */
-function setViewBox(vb){
-  stage.setAttribute("viewBox", vb);
-  overlay.setAttribute("viewBox", vb);
-  vbInput.value = vb;
+/* ---------- load / viewbox / zoom ---------- */
+const DEFAULT_VB = {x:0, y:0, w:800, h:600};
+let docVB = {...DEFAULT_VB};
+let view  = {...DEFAULT_VB};
+
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+function parseVB(str){
+  const p = String(str).trim().split(/[\s,]+/).map(Number);
+  if (p.length === 4 && p.every(n => !isNaN(n)) && p[2] > 0 && p[3] > 0) return {x:p[0], y:p[1], w:p[2], h:p[3]};
+  return null;
 }
+function applyView(){
+  const s = `${view.x} ${view.y} ${view.w} ${view.h}`;
+  stage.setAttribute("viewBox", s);
+  overlay.setAttribute("viewBox", s);
+  const lbl = document.getElementById("z-label");
+  if (lbl) lbl.textContent = Math.round(docVB.w/view.w*100) + "%";
+}
+function setViewBox(vb){
+  docVB = parseVB(vb) || {...DEFAULT_VB};
+  view = {...docVB};
+  vbInput.value = `${docVB.x} ${docVB.y} ${docVB.w} ${docVB.h}`;
+  applyView();
+}
+function fitView(){ view = {...docVB}; applyView(); refreshOverlay(); }
+function zoomAt(clientX, clientY, factor){
+  const p = toUser({clientX, clientY});
+  const nw = clamp(view.w/factor, docVB.w/100, docVB.w*100);
+  const f = nw/view.w;
+  view.x = p.x - (p.x - view.x)*f;
+  view.y = p.y - (p.y - view.y)*f;
+  view.w = nw;
+  view.h = view.h*f;
+  applyView();
+  refreshOverlay();
+}
+function zoomCenter(factor){
+  const r = canvasEl.getBoundingClientRect();
+  zoomAt(r.left + r.width/2, r.top + r.height/2, factor);
+}
+function startPan(e){
+  const ctm = overlay.getScreenCTM();
+  gesture = {type:"pan", startClient:{x:e.clientX, y:e.clientY}, startView:{...view}, scale:ctm.a || 1};
+  canvasEl.classList.add("panning");
+  bindGesture();
+}
+document.getElementById("z-in").onclick  = () => zoomCenter(1.25);
+document.getElementById("z-out").onclick = () => zoomCenter(1/1.25);
+document.getElementById("z-fit").onclick = fitView;
+canvasEl.addEventListener("wheel", e => {
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1/1.15);
+}, {passive:false});
+
+let spaceDown = false;
+window.addEventListener("keydown", e => {
+  if (e.code === "Space" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
+    spaceDown = true; canvasEl.classList.add("pannable"); e.preventDefault();
+  }
+});
+window.addEventListener("keyup", e => {
+  if (e.code === "Space"){ spaceDown = false; canvasEl.classList.remove("pannable","panning"); }
+});
+
 function loadSVG(text){
   let doc;
   try { doc = new DOMParser().parseFromString(text, "image/svg+xml"); }
@@ -741,10 +819,9 @@ function buildExportSVG(){
   const clone = stage.cloneNode(true);
   clone.querySelectorAll("#overlay").forEach(n => n.remove());
   clone.setAttribute("xmlns", NS);
-  const vb = stage.getAttribute("viewBox");
-  clone.setAttribute("width", stage.viewBox.baseVal.width);
-  clone.setAttribute("height", stage.viewBox.baseVal.height);
-  if (vb) clone.setAttribute("viewBox", vb);
+  clone.setAttribute("width", docVB.w);
+  clone.setAttribute("height", docVB.h);
+  clone.setAttribute("viewBox", `${docVB.x} ${docVB.y} ${docVB.w} ${docVB.h}`);
   const c = clone.querySelector("#content");
   if (c) c.removeAttribute("id");
   const d = clone.querySelector("#stage-defs");
@@ -766,15 +843,14 @@ function exportSVG(){
 }
 function exportPNG(){
   const s = buildExportSVG();
-  const vb = stage.viewBox.baseVal;
   const scale = 2;
   const img = new Image();
   const svgBlob = new Blob([s], {type:"image/svg+xml;charset=utf-8"});
   const url = URL.createObjectURL(svgBlob);
   img.onload = () => {
     const cv = document.createElement("canvas");
-    cv.width = Math.round(vb.width*scale);
-    cv.height = Math.round(vb.height*scale);
+    cv.width = Math.round(docVB.w*scale);
+    cv.height = Math.round(docVB.h*scale);
     const ctx = cv.getContext("2d");
     ctx.drawImage(img, 0, 0, cv.width, cv.height);
     URL.revokeObjectURL(url);
