@@ -44,6 +44,7 @@
   .rot-handle{fill:var(--accent);stroke:#fff}
   .sel-outline{fill:none;stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}
   .sel-line{stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}
+  .marquee{fill:rgba(76,141,255,.15);stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke;pointer-events:none}
   #zoombar{position:absolute;left:10px;bottom:10px;display:flex;align-items:center;gap:4px;
     background:rgba(38,39,46,.9);border:1px solid var(--line);border-radius:8px;padding:4px 6px;z-index:5}
   #zoombar button{padding:2px 9px;line-height:1.2}
@@ -139,8 +140,9 @@
       <button id="doc-stroke" class="ghost">Alle randen</button>
     </div>
     <p class="hint">Werkt niet? Zoom met het wiel, pan met midden-muis of spatie+slepen.<br>
-    V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer (vul lege vlakken)</b> · Del: verwijderen<br>
-    Pijltjes: verplaatsen (Shift = 10, Ctrl = op het raster) · Ctrl+Z/Y: undo/redo<br>
+    V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer</b> · Del: verwijderen<br>
+    Sleep op lege canvas = kader-selectie (meerdere) · Shift/Ctrl+klik = toevoegen/weghalen<br>
+    Pijltjes: verplaatsen (Shift = 10, Ctrl = raster) · Ctrl+Z/Y: undo/redo<br>
     JPG/PNG → SVG: sleep een afbeelding op het canvas of gebruik de afbeelding-knop (vereist serve.py).</p>
   </aside>
 </main>
@@ -184,7 +186,7 @@ const PRESENT = new Set(INHERIT);
 
 let uid = 0;
 let tool = "select";
-let selected = null;
+let selection = [];
 let quads = [];            // overlay handles
 let history = [];
 let future = [];
@@ -228,9 +230,9 @@ function pushHistory(){
   future.length = 0;
 }
 function restore(html){
-  const id = selected ? selected.dataset.id : null;
+  const ids = selection.map(el => el.dataset.id);
   content.innerHTML = html;
-  selected = id ? content.querySelector(`[data-id="${id}"]`) : null;
+  selection = ids.map(id => content.querySelector(`[data-id="${id}"]`)).filter(Boolean);
   rebuildLayers(); refreshProps(); refreshOverlay();
 }
 function undo(){ if(history.length<1) return; future.push(snapshot()); restore(history.pop()); setStatus("Undo"); }
@@ -239,53 +241,86 @@ function redo(){ if(future.length<1) return; history.push(snapshot()); restore(f
 function setStatus(t){ statusEl.textContent = t; }
 
 /* ---------- selection overlay ---------- */
+function userCorners(el){
+  const b = bboxOf(el);
+  const M = getMatrix(el);
+  return [[b.x,b.y],[b.x+b.w,b.y],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h]]
+    .map(p => new DOMPoint(p[0],p[1]).matrixTransform(M));
+}
+function cornersAABB(pts){
+  const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return {x, y, w: Math.max(...xs)-x, h: Math.max(...ys)-y};
+}
+function groupBox(){
+  return cornersAABB(selection.flatMap(userCorners));
+}
+
 function refreshOverlay(){
   overlay.innerHTML = "";
   quads = [];
-  if (!selected) { selInfo.textContent = ""; return; }
-  const b = bboxOf(selected);
-  const M = getMatrix(selected);
-  const corners = [
-    {x:b.x,       y:b.y},
-    {x:b.x+b.w,   y:b.y},
-    {x:b.x+b.w,   y:b.y+b.h},
-    {x:b.x,       y:b.y+b.h}
-  ].map(p => new DOMPoint(p.x,p.y).matrixTransform(M));
+  if (!selection.length){ selInfo.textContent = ""; return; }
 
-  const isLine = tag(selected) === "line";
-  if (isLine){
-    const p1 = localToUser(selected, {x:+selected.getAttribute("x1"), y:+selected.getAttribute("y1")});
-    const p2 = localToUser(selected, {x:+selected.getAttribute("x2"), y:+selected.getAttribute("y2")});
-    const ln = svgEl("line");
-    ln.setAttribute("x1",p1.x); ln.setAttribute("y1",p1.y);
-    ln.setAttribute("x2",p2.x); ln.setAttribute("y2",p2.y);
-    ln.setAttribute("class","sel-line");
-    overlay.appendChild(ln);
-    [[p1,"h1"],[p2,"h2"]].forEach(([p,id])=>{
-      overlay.appendChild(makeHandle(p.x,p.y,id,"square"));
-    });
-  } else {
+  if (selection.length === 1){
+    const el = selection[0];
+    const b = bboxOf(el);
+    const M = getMatrix(el);
+    const corners = [[b.x,b.y],[b.x+b.w,b.y],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h]]
+      .map(p => new DOMPoint(p[0],p[1]).matrixTransform(M));
+
+    if (tag(el) === "line"){
+      const p1 = localToUser(el, {x:+el.getAttribute("x1"), y:+el.getAttribute("y1")});
+      const p2 = localToUser(el, {x:+el.getAttribute("x2"), y:+el.getAttribute("y2")});
+      const ln = svgEl("line");
+      ln.setAttribute("x1",p1.x); ln.setAttribute("y1",p1.y);
+      ln.setAttribute("x2",p2.x); ln.setAttribute("y2",p2.y);
+      ln.setAttribute("class","sel-line");
+      overlay.appendChild(ln);
+      [[p1,"h1"],[p2,"h2"]].forEach(([p,id]) => overlay.appendChild(makeHandle(p.x,p.y,id,"square")));
+    } else {
+      const poly = svgEl("polygon");
+      poly.setAttribute("points", corners.map(p=>`${p.x},${p.y}`).join(" "));
+      poly.setAttribute("class","sel-outline");
+      overlay.appendChild(poly);
+      const cx = (corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4;
+      const cy = (corners[0].y+corners[1].y+corners[2].y+corners[3].y)/4;
+      const mid01 = {x:(corners[0].x+corners[1].x)/2, y:(corners[0].y+corners[1].y)/2};
+      const rot = {x: cx + (mid01.x-cx)*1.35, y: cy + (mid01.y-cy)*1.35};
+      const stem = svgEl("line");
+      stem.setAttribute("x1",mid01.x); stem.setAttribute("y1",mid01.y);
+      stem.setAttribute("x2",rot.x);   stem.setAttribute("y2",rot.y);
+      stem.setAttribute("class","sel-line");
+      overlay.appendChild(stem);
+      overlay.appendChild(makeHandle(rot.x,rot.y,"rot","circle"));
+      [["nw",corners[0]],["ne",corners[1]],["se",corners[2]],["sw",corners[3]]]
+        .forEach(([id,p]) => overlay.appendChild(makeHandle(p.x,p.y,id,"square")));
+    }
+    const t = LABELS[tag(el)] || tag(el);
+    selInfo.textContent = `${t}  ·  x=${Math.round(b.x)} y=${Math.round(b.y)} w=${Math.round(b.w)} h=${Math.round(b.h)}`;
+    return;
+  }
+
+  // meerdere selectie: losse contouren + gezamenlijke box met handvatten
+  selection.forEach(el => {
     const poly = svgEl("polygon");
-    poly.setAttribute("points", corners.map(p=>`${p.x},${p.y}`).join(" "));
+    poly.setAttribute("points", userCorners(el).map(p=>`${p.x},${p.y}`).join(" "));
     poly.setAttribute("class","sel-outline");
     overlay.appendChild(poly);
-
-    const cx = (corners[0].x+corners[1].x+corners[2].x+corners[3].x)/4;
-    const cy = (corners[0].y+corners[1].y+corners[2].y+corners[3].y)/4;
-    const mid01 = {x:(corners[0].x+corners[1].x)/2, y:(corners[0].y+corners[1].y)/2};
-    const rot = {x: cx + (mid01.x-cx)*1.35, y: cy + (mid01.y-cy)*1.35};
-    const stem = svgEl("line");
-    stem.setAttribute("x1",mid01.x); stem.setAttribute("y1",mid01.y);
-    stem.setAttribute("x2",rot.x);   stem.setAttribute("y2",rot.y);
-    stem.setAttribute("class","sel-line");
-    overlay.appendChild(stem);
-    overlay.appendChild(makeHandle(rot.x,rot.y,"rot","circle"));
-
-    [["nw",corners[0]],["ne",corners[1]],["se",corners[2]],["sw",corners[3]]]
-      .forEach(([id,p]) => overlay.appendChild(makeHandle(p.x,p.y,id,"square")));
-  }
-  const t = LABELS[tag(selected)] || tag(selected);
-  selInfo.textContent = `${t}  ·  x=${Math.round(b.x)} y=${Math.round(b.y)} w=${Math.round(b.w)} h=${Math.round(b.h)}`;
+  });
+  const box = groupBox();
+  const hub = Math.max(box.h*0.12, handleSize()*1.6);
+  const topMid = {x:box.x+box.w/2, y:box.y};
+  const rot = {x:box.x+box.w/2, y:box.y - hub};
+  const stem = svgEl("line");
+  stem.setAttribute("x1",topMid.x); stem.setAttribute("y1",topMid.y);
+  stem.setAttribute("x2",rot.x);    stem.setAttribute("y2",rot.y);
+  stem.setAttribute("class","sel-line");
+  overlay.appendChild(stem);
+  overlay.appendChild(makeHandle(rot.x,rot.y,"grot","circle"));
+  [["gnw",{x:box.x,y:box.y}],["gne",{x:box.x+box.w,y:box.y}],
+   ["gse",{x:box.x+box.w,y:box.y+box.h}],["gsw",{x:box.x,y:box.y+box.h}]]
+    .forEach(([id,p]) => overlay.appendChild(makeHandle(p.x,p.y,id,"square")));
+  selInfo.textContent = `${selection.length} vormen geselecteerd`;
 }
 function handleSize(){
   const vb = stage.viewBox.baseVal;
@@ -312,8 +347,59 @@ function makeHandle(x,y,id,kind){
 
 /* ---------- properties panel ---------- */
 function refreshProps(){
-  if (!selected){ propsEl.innerHTML = '<p class="empty">Klik een vorm op het canvas om ze te bewerken, of gebruik <b>Kleur alles</b> hieronder.</p>'; return; }
-  const el = selected;
+  if (!selection.length){
+    propsEl.innerHTML = '<p class="empty">Klik een vorm op het canvas om ze te bewerken, sleep een kader om meerdere te selecteren, of gebruik <b>Kleur alles</b> hieronder.</p>';
+    return;
+  }
+  const on = (id, ev, fn) => { const n = document.getElementById(id); if(n) n.addEventListener(ev, fn); };
+
+  if (selection.length > 1){
+    const first = selection[0];
+    const fill = first.getAttribute("fill");
+    const stroke = first.getAttribute("stroke");
+    const fillNone = fill === "none" || fill === null;
+    const strokeNone = stroke === "none" || stroke === null;
+    propsEl.innerHTML = `
+      <div class="field"><label>${selection.length} vormen</label></div>
+      <div class="field"><label>Vulling</label>
+        <input type="color" id="p-fill" value="${toHex(fillNone ? "#000000" : fill)}">
+        <label style="flex:0"><input type="checkbox" id="p-fillnone" ${fillNone?"checked":""}> geen</label>
+      </div>
+      <div class="field"><label>Rand</label>
+        <input type="color" id="p-stroke" value="${toHex(strokeNone ? "#000000" : stroke)}">
+        <label style="flex:0"><input type="checkbox" id="p-strokenone" ${strokeNone?"checked":""}> geen</label>
+      </div>
+      <div class="field"><label>Randdikte</label>
+        <input type="number" id="p-sw" min="0" step="0.5" value="${first.getAttribute("stroke-width") || 1}">
+      </div>
+      <div class="field"><label>Opacity</label>
+        <input type="number" id="p-op" min="0" max="1" step="0.05" value="${first.getAttribute("opacity") ?? 1}">
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="p-back" class="ghost">Naar achter</button>
+        <button id="p-front" class="ghost">Naar voor</button>
+      </div>`;
+    const applyAll = (attr, val) => {
+      selection.forEach(el => val === null ? el.removeAttribute(attr) : el.setAttribute(attr, val));
+      refreshOverlay(); rebuildLayers();
+    };
+    const commit = () => pushHistory();
+    on("p-fill","input", e => applyAll("fill", e.target.value));
+    on("p-fill","change", commit);
+    on("p-fillnone","change", e => { applyAll("fill", e.target.checked ? "none" : document.getElementById("p-fill").value); commit(); });
+    on("p-stroke","input", e => applyAll("stroke", e.target.value));
+    on("p-stroke","change", commit);
+    on("p-strokenone","change", e => { applyAll("stroke", e.target.checked ? "none" : document.getElementById("p-stroke").value); commit(); });
+    on("p-sw","input", e => applyAll("stroke-width", e.target.value));
+    on("p-sw","change", commit);
+    on("p-op","input", e => applyAll("opacity", e.target.value === "1" ? null : e.target.value));
+    on("p-op","change", commit);
+    on("p-back","click",  () => { selection.slice().reverse().forEach(el => content.insertBefore(el, content.firstChild)); rebuildLayers(); commit(); });
+    on("p-front","click", () => { selection.forEach(el => content.appendChild(el)); rebuildLayers(); commit(); });
+    return;
+  }
+
+  const el = selection[0];
   const fill = el.getAttribute("fill");
   const stroke = el.getAttribute("stroke");
   const t = tag(el);
@@ -349,7 +435,6 @@ function refreshProps(){
       <button id="p-front" class="ghost">Naar voor</button>
     </div>
   `;
-  const on = (id, ev, fn) => { const n = document.getElementById(id); if(n) n.addEventListener(ev, fn); };
   const apply = (attr, val) => { if (val === null) el.removeAttribute(attr); else el.setAttribute(attr, val); refreshOverlay(); rebuildLayers(); };
   const commit = () => pushHistory();
 
@@ -390,27 +475,33 @@ function rebuildLayers(){
   for (let i = kids.length - 1; i >= 0; i--){
     const el = kids[i];
     const row = document.createElement("div");
-    row.className = "layer" + (el === selected ? " sel" : "");
+    row.className = "layer" + (isSelected(el) ? " sel" : "");
     const hidden = el.getAttribute("visibility") === "hidden";
     row.innerHTML = `<span class="name">${el.dataset.bucket ? "Vlak" : (LABELS[tag(el)]||tag(el))}</span>
       <span class="mini" data-act="vis" title="Zichtbaar">${hidden?"◌":"●"}</span>
       <span class="mini" data-act="del" title="Verwijder">✕</span>`;
     row.addEventListener("click", e => {
       if (e.target.dataset.act === "vis"){ el.setAttribute("visibility", hidden ? "visible" : "hidden"); rebuildLayers(); return; }
-      if (e.target.dataset.act === "del"){ el.remove(); if (selected===el) selected=null; rebuildLayers(); refreshProps(); refreshOverlay(); pushHistory(); return; }
-      select(el);
+      if (e.target.dataset.act === "del"){ el.remove(); selection = selection.filter(s=>s!==el); rebuildLayers(); refreshProps(); refreshOverlay(); pushHistory(); return; }
+      if (e.shiftKey || e.ctrlKey || e.metaKey){
+        setSelection(isSelected(el) ? selection.filter(s=>s!==el) : [...selection, el]);
+      } else {
+        select(el);
+      }
     });
     layersEl.appendChild(row);
   }
 }
 
 /* ---------- selection ---------- */
-function select(el){
-  selected = el;
+function isSelected(el){ return selection.includes(el); }
+function setSelection(arr){
+  selection = arr.filter((el, i) => el && arr.indexOf(el) === i);
   rebuildLayers();
   refreshProps();
   refreshOverlay();
 }
+function select(el){ setSelection(el ? [el] : []); }
 
 /* ---------- create shapes ---------- */
 function newShape(kind){
@@ -576,11 +667,16 @@ function onStageDown(e){
     return;
   }
   if (tool !== "select"){ startDraw(e); return; }
-  if (e.target === stage) { select(null); refreshOverlay(); return; }
+  if (e.target === stage){ startMarquee(e); return; }
   const el = e.target.closest && e.target.closest("[data-id]");
   if (!el) return;
-  select(el);
-  startMove(e, el);
+  const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+  if (additive){
+    setSelection(isSelected(el) ? selection.filter(s=>s!==el) : [...selection, el]);
+    return;
+  }
+  if (!isSelected(el)) setSelection([el]);
+  startMove(e);
 }
 
 function onOverlayDown(e){
@@ -589,43 +685,81 @@ function onOverlayDown(e){
   const h = e.target;
   if (!h.dataset || !h.dataset.handle) return;
   e.preventDefault();
-  if (!selected) return;
-  if (h.dataset.handle === "rot") startRotate(e);
-  else if (h.dataset.handle === "h1") startLineEnd(e, "x1","y1");
-  else if (h.dataset.handle === "h2") startLineEnd(e, "x2","y2");
-  else startScale(e, h.dataset.handle);
+  if (!selection.length) return;
+  const id = h.dataset.handle;
+  if (id === "rot") startRotate(e);
+  else if (id === "grot") startGroupRotate(e);
+  else if (id === "h1") startLineEnd(e, "x1","y1");
+  else if (id === "h2") startLineEnd(e, "x2","y2");
+  else if (id[0] === "g") startGroupScale(e, id.slice(1));
+  else startScale(e, id);
 }
 
-function startMove(e, el){
+function startMarquee(e){
+  const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+  if (!additive) setSelection([]);
+  const p = toUser(e);
+  const r = svgEl("rect");
+  r.setAttribute("class","marquee");
+  r.setAttribute("x",p.x); r.setAttribute("y",p.y);
+  r.setAttribute("width",0); r.setAttribute("height",0);
+  overlay.appendChild(r);
+  gesture = {type:"marquee", start:p, rect:r, additive, base: additive ? selection.slice() : []};
+  bindGesture();
+}
+
+function startMove(e){
   const start = toUser(e);
-  const M0 = getMatrix(el);
-  gesture = {type:"move", start, M0, el};
+  const items = selection.map(el => ({el, M0:getMatrix(el)}));
+  gesture = {type:"move", start, items};
   bindGesture();
 }
 function startScale(e, corner){
-  const b = bboxOf(selected);
-  const M0 = getMatrix(selected);
+  const el = selection[0];
+  const b = bboxOf(el);
+  const M0 = getMatrix(el);
   const map = {
     nw:{c:{x:b.x,y:b.y},      a:{x:b.x+b.w,y:b.y+b.h}},
     ne:{c:{x:b.x+b.w,y:b.y},  a:{x:b.x,y:b.y+b.h}},
     se:{c:{x:b.x+b.w,y:b.y+b.h}, a:{x:b.x,y:b.y}},
     sw:{c:{x:b.x,y:b.y+b.h},  a:{x:b.x+b.w,y:b.y}}
   }[corner];
-  gesture = {type:"scale", el:selected, M0, b, cornerLocal:map.c, anchorLocal:map.a, shift:e.shiftKey};
+  gesture = {type:"scale", el, M0, b, cornerLocal:map.c, anchorLocal:map.a, shift:e.shiftKey};
   bindGesture();
 }
 function startRotate(e){
-  const b = bboxOf(selected);
+  const el = selection[0];
+  const b = bboxOf(el);
   const center = {x:b.x+b.w/2, y:b.y+b.h/2};
-  const M0 = getMatrix(selected);
+  const M0 = getMatrix(el);
   const cU = new DOMPoint(center.x,center.y).matrixTransform(M0);
   const p0 = toUser(e);
-  gesture = {type:"rotate", el:selected, M0, center, cU, a0:Math.atan2(p0.y-cU.y, p0.x-cU.x)};
+  gesture = {type:"rotate", el, M0, center, cU, a0:Math.atan2(p0.y-cU.y, p0.x-cU.x)};
   bindGesture();
 }
 function startLineEnd(e, ax, ay){
-  const el = selected;
+  const el = selection[0];
   gesture = {type:"lineend", el, ax, ay, M0:getMatrix(el)};
+  bindGesture();
+}
+function startGroupScale(e, corner){
+  const box = groupBox();
+  const map = {
+    nw:{c:{x:box.x,y:box.y},             a:{x:box.x+box.w,y:box.y+box.h}},
+    ne:{c:{x:box.x+box.w,y:box.y},       a:{x:box.x,y:box.y+box.h}},
+    se:{c:{x:box.x+box.w,y:box.y+box.h}, a:{x:box.x,y:box.y}},
+    sw:{c:{x:box.x,y:box.y+box.h},       a:{x:box.x+box.w,y:box.y}}
+  }[corner];
+  gesture = {type:"gscale", items: selection.map(el=>({el, M0:getMatrix(el)})),
+             corner: map.c, anchor: map.a, shift: e.shiftKey};
+  bindGesture();
+}
+function startGroupRotate(e){
+  const box = groupBox();
+  const center = {x:box.x+box.w/2, y:box.y+box.h/2};
+  const p0 = toUser(e);
+  gesture = {type:"grotate", items: selection.map(el=>({el, M0:getMatrix(el)})),
+             center, a0: Math.atan2(p0.y-center.y, p0.x-center.x)};
   bindGesture();
 }
 function startDraw(e){
@@ -673,8 +807,27 @@ function onMove(e){
   const g = gesture;
   if (g.type === "move"){
     const dx = p.x - g.start.x, dy = p.y - g.start.y;
-    const M = new DOMMatrix().translate(dx,dy).multiply(g.M0);
-    setMatrix(g.el, M);
+    const T = new DOMMatrix().translate(dx, dy);
+    g.items.forEach(it => setMatrix(it.el, T.multiply(it.M0)));
+  } else if (g.type === "gscale"){
+    const a = g.corner, an = g.anchor;
+    let sx = Math.abs(a.x-an.x) > 1e-6 ? (p.x-an.x)/(a.x-an.x) : 1;
+    let sy = Math.abs(a.y-an.y) > 1e-6 ? (p.y-an.y)/(a.y-an.y) : 1;
+    if (g.shift || e.shiftKey){ const s = (Math.abs(sx)+Math.abs(sy))/2; sx = Math.sign(sx||1)*s; sy = Math.sign(sy||1)*s; }
+    const G = new DOMMatrix().translate(an.x, an.y).scale(sx, sy).translate(-an.x, -an.y);
+    g.items.forEach(it => setMatrix(it.el, G.multiply(it.M0)));
+  } else if (g.type === "grotate"){
+    const a1 = Math.atan2(p.y - g.center.y, p.x - g.center.x);
+    let deg = (a1 - g.a0) * 180/Math.PI;
+    if (e.shiftKey) deg = Math.round(deg/15)*15;
+    const R = new DOMMatrix().translate(g.center.x, g.center.y).rotate(deg).translate(-g.center.x, -g.center.y);
+    g.items.forEach(it => setMatrix(it.el, R.multiply(it.M0)));
+  } else if (g.type === "marquee"){
+    const x = Math.min(g.start.x, p.x), y = Math.min(g.start.y, p.y);
+    g.rect.setAttribute("x", x); g.rect.setAttribute("y", y);
+    g.rect.setAttribute("width", Math.abs(p.x - g.start.x));
+    g.rect.setAttribute("height", Math.abs(p.y - g.start.y));
+    return;
   } else if (g.type === "scale"){
     const M0 = g.M0;
     const a = M0.a, b = M0.b, c = M0.c, d = M0.d;
@@ -736,29 +889,47 @@ function onUp(){
   window.removeEventListener("pointermove", onMove);
   window.removeEventListener("pointerup", onUp);
   canvasEl.classList.remove("panning");
-  if (g.type === "draw" || g.type === "drawpath" || g.type === "lineend") pushHistory();
-  if (g.type === "move" || g.type === "scale" || g.type === "rotate") pushHistory();
+  if (g.type === "marquee"){ finishMarquee(g); return; }
+  if (["draw","drawpath","lineend","move","scale","rotate","gscale","grotate"].includes(g.type)) pushHistory();
   rebuildLayers();
   refreshProps();
   refreshOverlay();
 }
+function rectsOverlap(a, b){
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+function finishMarquee(g){
+  const r = g.rect;
+  const x = +r.getAttribute("x"), y = +r.getAttribute("y");
+  const w = +r.getAttribute("width"), h = +r.getAttribute("height");
+  if (w > 2 || h > 2){
+    const box = {x, y, w, h};
+    const hits = [...content.children].filter(el =>
+      el.getAttribute("visibility") !== "hidden" && rectsOverlap(box, cornersAABB(userCorners(el))));
+    setSelection(g.additive ? [...g.base, ...hits] : hits);
+  } else {
+    if (!g.additive) setSelection([]); else refreshOverlay();
+  }
+}
 
 /* ---------- layer reorder buttons handled in props; delete/dup ---------- */
 function deleteSelected(){
-  if (!selected) return;
-  selected.remove();
-  selected = null;
+  if (!selection.length) return;
+  selection.forEach(el => el.remove());
+  selection = [];
   rebuildLayers(); refreshProps(); refreshOverlay(); pushHistory();
   setStatus("Verwijderd");
 }
 function duplicateSelected(){
-  if (!selected) return;
-  const clone = selected.cloneNode(true);
-  clone.dataset.id = nextId();
-  const M = getMatrix(selected).translate(20,20);
-  setMatrix(clone, M);
-  content.appendChild(clone);
-  select(clone);
+  if (!selection.length) return;
+  const clones = selection.map(el => {
+    const c = el.cloneNode(true);
+    c.dataset.id = nextId();
+    setMatrix(c, getMatrix(el).translate(20,20));
+    content.appendChild(c);
+    return c;
+  });
+  setSelection(clones);
   pushHistory();
   setStatus("Gedupliceerd");
 }
@@ -780,14 +951,14 @@ function translateBy(el, dx, dy){
   setMatrix(el, new DOMMatrix().translate(dx, dy).multiply(M));
 }
 function nudgeSelected(dx, dy, snapToGrid){
-  if (!selected) return;
+  if (!selection.length) return;
   if (snapToGrid){
-    const m = userMinCorner(selected);
-    const tx = Math.round((m.x + dx*GRID)/GRID)*GRID;
-    const ty = Math.round((m.y + dy*GRID)/GRID)*GRID;
-    translateBy(selected, tx - m.x, ty - m.y);
+    const box = groupBox();
+    const tx = Math.round((box.x + dx*GRID)/GRID)*GRID - box.x;
+    const ty = Math.round((box.y + dy*GRID)/GRID)*GRID - box.y;
+    selection.forEach(el => translateBy(el, tx, ty));
   } else {
-    translateBy(selected, dx, dy);
+    selection.forEach(el => translateBy(el, dx, dy));
   }
   pushHistory();
   refreshOverlay();
@@ -822,7 +993,7 @@ document.getElementById("btn-new").onclick = () => {
   pushHistory();
   content.innerHTML = "";
   stageDefs.innerHTML = "";
-  selected = null;
+  selection = [];
   setViewBox("0 0 800 600");
   document.getElementById("doc-name").value = "ontwerp";
   rebuildLayers(); refreshProps(); refreshOverlay();
@@ -1041,7 +1212,7 @@ function loadSVG(text){
     }
   }
   leaves.forEach(el => content.appendChild(el));
-  selected = null;
+  selection = [];
   rebuildLayers(); refreshProps(); refreshOverlay();
   setStatus(`Geladen: ${leaves.length} vorm(en)`);
 }
@@ -1105,7 +1276,7 @@ document.addEventListener("keydown", e => {
   const arrows = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]};
   if (arrows[e.key]){
     e.preventDefault();
-    if (!selected) return;
+    if (!selection.length) return;
     const [dx, dy] = arrows[e.key];
     if (e.ctrlKey || e.metaKey) nudgeSelected(dx, dy, true);
     else nudgeSelected(dx * (e.shiftKey ? NUDGE_BIG : NUDGE_STEP), dy * (e.shiftKey ? NUDGE_BIG : NUDGE_STEP), false);
