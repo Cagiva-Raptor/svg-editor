@@ -140,6 +140,24 @@
       <button id="doc-fill" class="ghost">Alle vullingen</button>
       <button id="doc-stroke" class="ghost">Alle randen</button>
     </div>
+    <h3 style="margin-top:16px">Selectie op kleur</h3>
+    <div class="field">
+      <label>Kleur</label>
+      <input type="color" id="sel-color" value="#000000">
+      <button id="pick-color" class="ghost" title="Prik een kleur op het canvas">prik</button>
+    </div>
+    <div class="field">
+      <label>Drempel</label>
+      <input type="number" id="sel-thresh" min="0" max="442" step="1" value="30" title="0 = exact, hoger = ruimere kleurmarge" style="width:100%">
+    </div>
+    <div class="row">
+      <label style="color:var(--muted)"><input type="checkbox" id="sel-fill" checked> vulling</label>
+      <label style="color:var(--muted)"><input type="checkbox" id="sel-stroke"> rand</label>
+    </div>
+    <div class="row">
+      <button id="sel-run" class="ghost">Selecteer</button>
+      <button id="sel-add" class="ghost">+ Toevoegen</button>
+    </div>
     <p class="hint">Werkt niet? Zoom met het wiel, pan met midden-muis of spatie+slepen.<br>
     V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer</b> · Del: verwijderen<br>
     Sleep op lege canvas = kader-selectie (meerdere) · Shift/Ctrl+klik = toevoegen/weghalen<br>
@@ -190,7 +208,8 @@ let uid = 0;
 let tool = "select";
 let selection = [];
 let quads = [];
-let dragLayer = null;            // overlay handles
+let dragLayer = null;
+let pickingColor = false;            // overlay handles
 let history = [];
 let future = [];
 let clipboard = null;
@@ -349,39 +368,86 @@ function makeHandle(x,y,id,kind){
 }
 
 /* ---------- properties panel ---------- */
-const GEO_ATTRS = {
-  "g-x":"x", "g-y":"y", "g-w":"width", "g-h":"height", "g-rx":"rx", "g-ry":"ry",
-  "g-cx":"cx", "g-cy":"cy", "g-r":"r",
-  "g-x1":"x1", "g-y1":"y1", "g-x2":"x2", "g-y2":"y2"
-};
+/* ---------- geometrie: effectieve waarden (rekening houdend met transform) ---------- */
+function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
+function geomNum(el, a){ return parseFloat(el.getAttribute(a)) || 0; }
+function geomScale(el){
+  const M = getMatrix(el);
+  return { sx: Math.hypot(M.a, M.b) || 1, sy: Math.hypot(M.c, M.d) || 1 };
+}
+function geomGet(el){
+  const t = tag(el);
+  const { sx, sy } = geomScale(el);
+  const M = getMatrix(el);
+  const map = (x, y) => new DOMPoint(x, y).matrixTransform(M);
+  const n = a => geomNum(el, a);
+  if (t === "rect"){ const p = map(n("x"), n("y")); return { x:p.x, y:p.y, w:n("width")*sx, h:n("height")*sy, rx:n("rx")*sx }; }
+  if (t === "ellipse"){ const p = map(n("cx"), n("cy")); return { cx:p.x, cy:p.y, rx:n("rx")*sx, ry:n("ry")*sy }; }
+  if (t === "circle"){ const p = map(n("cx"), n("cy")); return { cx:p.x, cy:p.y, r:n("r")*sx }; }
+  if (t === "line"){ const p1 = map(n("x1"), n("y1")), p2 = map(n("x2"), n("y2")); return { x1:p1.x, y1:p1.y, x2:p2.x, y2:p2.y }; }
+  if (t === "text"){ const p = map(n("x"), n("y")); return { x:p.x, y:p.y }; }
+  return {};
+}
+function translateRef(el, ax, ay, tx, ty){
+  const M = getMatrix(el);
+  const p = new DOMPoint(geomNum(el, ax), geomNum(el, ay)).matrixTransform(M);
+  setMatrix(el, new DOMMatrix().translate(tx - p.x, ty - p.y).multiply(M));
+}
+function geomSet(el, id, value){
+  const t = tag(el);
+  const M = getMatrix(el);
+  const map = (x, y) => new DOMPoint(x, y).matrixTransform(M);
+  const inv = (x, y) => new DOMPoint(x, y).matrixTransform(M.inverse());
+  const { sx, sy } = geomScale(el);
+  const n = a => geomNum(el, a);
+
+  if (t === "rect"){
+    if (id === "g-x"){ const p = map(n("x"), n("y")); translateRef(el, "x", "y", value, p.y); }
+    else if (id === "g-y"){ const p = map(n("x"), n("y")); translateRef(el, "x", "y", p.x, value); }
+    else if (id === "g-w"){ el.setAttribute("width", value / sx); }
+    else if (id === "g-h"){ el.setAttribute("height", value / sy); }
+    else if (id === "g-rx"){ const r = Math.max(0, value); el.setAttribute("rx", r / sx); el.setAttribute("ry", r / sy); }
+  } else if (t === "ellipse"){
+    if (id === "g-cx"){ const p = map(n("cx"), n("cy")); translateRef(el, "cx", "cy", value, p.y); }
+    else if (id === "g-cy"){ const p = map(n("cx"), n("cy")); translateRef(el, "cx", "cy", p.x, value); }
+    else if (id === "g-rx"){ el.setAttribute("rx", value / sx); }
+    else if (id === "g-ry"){ el.setAttribute("ry", value / sy); }
+  } else if (t === "circle"){
+    if (id === "g-cx"){ const p = map(n("cx"), n("cy")); translateRef(el, "cx", "cy", value, p.y); }
+    else if (id === "g-cy"){ const p = map(n("cx"), n("cy")); translateRef(el, "cx", "cy", p.x, value); }
+    else if (id === "g-r"){ el.setAttribute("r", value / sx); }
+  } else if (t === "line"){
+    if (id === "g-x1"){ const p = map(n("x1"), n("y1")); el.setAttribute("x1", inv(value, p.y).x); }
+    else if (id === "g-y1"){ const p = map(n("x1"), n("y1")); el.setAttribute("y1", inv(p.x, value).y); }
+    else if (id === "g-x2"){ const p = map(n("x2"), n("y2")); el.setAttribute("x2", inv(value, p.y).x); }
+    else if (id === "g-y2"){ const p = map(n("x2"), n("y2")); el.setAttribute("y2", inv(p.x, value).y); }
+  } else if (t === "text"){
+    if (id === "g-x"){ const p = map(n("x"), n("y")); translateRef(el, "x", "y", value, p.y); }
+    else if (id === "g-y"){ const p = map(n("x"), n("y")); translateRef(el, "x", "y", p.x, value); }
+  }
+}
 function geomField(id, label, val){
-  return `<div class="field"><label>${label}</label><input type="number" step="1" id="${id}" value="${val}"></div>`;
+  return `<div class="field"><label>${label}</label><input type="number" step="any" id="${id}" value="${round2(val)}"></div>`;
 }
 function geometryFields(el){
   const t = tag(el);
-  const g = a => { const v = el.getAttribute(a); return v === null ? "" : v; };
-  if (t === "rect")    return geomField("g-x","X",g("x")) + geomField("g-y","Y",g("y")) +
-                              geomField("g-w","Breedte",g("width")) + geomField("g-h","Hoogte",g("height")) +
-                              geomField("g-rx","Afronding",g("rx") || 0);
-  if (t === "ellipse") return geomField("g-cx","CX",g("cx")) + geomField("g-cy","CY",g("cy")) +
-                              geomField("g-rx","RX",g("rx")) + geomField("g-ry","RY",g("ry"));
-  if (t === "circle")  return geomField("g-cx","CX",g("cx")) + geomField("g-cy","CY",g("cy")) + geomField("g-r","R",g("r"));
-  if (t === "line")    return geomField("g-x1","X1",g("x1")) + geomField("g-y1","Y1",g("y1")) +
-                              geomField("g-x2","X2",g("x2")) + geomField("g-y2","Y2",g("y2"));
-  if (t === "text")    return geomField("g-x","X",g("x")) + geomField("g-y","Y",g("y"));
+  const v = geomGet(el);
+  if (t === "rect")    return geomField("g-x","X",v.x) + geomField("g-y","Y",v.y) +
+                              geomField("g-w","Breedte",v.w) + geomField("g-h","Hoogte",v.h) +
+                              geomField("g-rx","Afronding",v.rx);
+  if (t === "ellipse") return geomField("g-cx","CX",v.cx) + geomField("g-cy","CY",v.cy) +
+                              geomField("g-rx","RX",v.rx) + geomField("g-ry","RY",v.ry);
+  if (t === "circle")  return geomField("g-cx","CX",v.cx) + geomField("g-cy","CY",v.cy) + geomField("g-r","R",v.r);
+  if (t === "line")    return geomField("g-x1","X1",v.x1) + geomField("g-y1","Y1",v.y1) +
+                              geomField("g-x2","X2",v.x2) + geomField("g-y2","Y2",v.y2);
+  if (t === "text")    return geomField("g-x","X",v.x) + geomField("g-y","Y",v.y);
   return "";
 }
 function wireGeometry(el, commit){
-  Object.entries(GEO_ATTRS).forEach(([id, attr]) => {
+  ["g-x","g-y","g-w","g-h","g-rx","g-ry","g-cx","g-cy","g-r","g-x1","g-y1","g-x2","g-y2"].forEach(id => {
     const n = document.getElementById(id);
     if (!n) return;
-    const set = () => {
-      if (n.value === "") el.removeAttribute(attr); else el.setAttribute(attr, n.value);
-      if (id === "g-rx" && tag(el) === "rect"){
-        if (n.value === "") el.removeAttribute("ry"); else el.setAttribute("ry", n.value);
-      }
-      refreshOverlay();
-    };
+    const set = () => { const val = parseFloat(n.value); if (isNaN(val)) return; geomSet(el, id, val); refreshOverlay(); };
     n.addEventListener("input", set);
     n.addEventListener("change", commit);
   });
@@ -768,6 +834,20 @@ stage.addEventListener("pointerdown", onStageDown);
 
 function onStageDown(e){
   if (e.button === 1 || spaceDown){ e.preventDefault(); startPan(e); return; }
+  if (pickingColor){
+    pickingColor = false;
+    canvasEl.style.cursor = "";
+    const el = e.target.closest && e.target.closest("[data-id]");
+    const c = el ? el.getAttribute("fill") : null;
+    const rgb = normaliseColour(c);
+    if (rgb){
+      document.getElementById("sel-color").value = "#" + [rgb.r,rgb.g,rgb.b].map(v => v.toString(16).padStart(2,"0")).join("");
+      selectByColour(false);
+    } else {
+      setStatus("Geen vulling met kleur op dit punt");
+    }
+    return;
+  }
   if (tool === "fill"){
     const color = document.getElementById("fill-color").value;
     const hit = document.elementFromPoint(e.clientX, e.clientY);
@@ -1041,7 +1121,7 @@ function duplicateSelected(){
   const clones = selection.map(el => {
     const c = el.cloneNode(true);
     c.dataset.id = nextId();
-    setMatrix(c, getMatrix(el).translate(20,20));
+    setMatrix(c, new DOMMatrix().translate(20,20).multiply(getMatrix(el)));
     content.appendChild(c);
     return c;
   });
@@ -1077,6 +1157,7 @@ function nudgeSelected(dx, dy, snapToGrid){
     selection.forEach(el => translateBy(el, dx, dy));
   }
   pushHistory();
+  refreshProps();
   refreshOverlay();
   setStatus("Verplaatst");
 }
@@ -1186,6 +1267,52 @@ function applyGlobal(kind){
 }
 document.getElementById("doc-fill").onclick = () => applyGlobal("fill");
 document.getElementById("doc-stroke").onclick = () => applyGlobal("stroke");
+
+/* ---------- selectie op kleur ---------- */
+let pickCtx = null;
+function hexToRgb(s){
+  s = String(s).trim().toLowerCase();
+  if (s[0] === "#"){
+    let h = s.slice(1);
+    if (h.length === 3) h = h.split("").map(x => x + x).join("");
+    if (h.length >= 6) return { r:parseInt(h.slice(0,2),16), g:parseInt(h.slice(2,4),16), b:parseInt(h.slice(4,6),16) };
+    return null;
+  }
+  const m = s.match(/rgba?\(([^)]+)\)/);
+  if (m){ const [r,g,b] = m[1].split(",").map(Number); return {r,g,b}; }
+  return null;
+}
+function normaliseColour(c){
+  if (!c || c === "none" || /^url\(/i.test(c)) return null;
+  if (!pickCtx) pickCtx = document.createElement("canvas").getContext("2d");
+  pickCtx.fillStyle = "#000000";
+  pickCtx.fillStyle = c;
+  return hexToRgb(pickCtx.fillStyle);
+}
+function colourDistance(a, b){ return Math.hypot(a.r-b.r, a.g-b.g, a.b-b.b); }
+function selectByColour(additive){
+  const target = hexToRgb(document.getElementById("sel-color").value);
+  if (!target) return;
+  const thr = parseFloat(document.getElementById("sel-thresh").value) || 0;
+  const useFill = document.getElementById("sel-fill").checked;
+  const useStroke = document.getElementById("sel-stroke").checked;
+  const hits = [...content.children].filter(el => {
+    if (el.getAttribute("visibility") === "hidden") return false;
+    const cols = [];
+    if (useFill){ const f = el.getAttribute("fill"); if (f !== null) cols.push(f); }
+    if (useStroke){ const s = el.getAttribute("stroke"); if (s !== null) cols.push(s); }
+    return cols.some(c => { const rgb = normaliseColour(c); return rgb && colourDistance(rgb, target) <= thr; });
+  });
+  setSelection(additive ? [...selection, ...hits] : hits);
+  setStatus(`${hits.length} vorm(en) geselecteerd op kleur (drempel ${thr})`);
+}
+document.getElementById("sel-run").onclick = () => selectByColour(false);
+document.getElementById("sel-add").onclick = () => selectByColour(true);
+document.getElementById("pick-color").onclick = () => {
+  pickingColor = true;
+  canvasEl.style.cursor = "crosshair";
+  setStatus("Klik op een vorm om de kleur te prikken");
+};
 
 /* ---------- drag & drop ---------- */
 ["dragenter","dragover"].forEach(ev => canvasEl.addEventListener(ev, e => {
@@ -1388,7 +1515,7 @@ document.addEventListener("keydown", e => {
   const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
   if (inField) return;
   if (e.key === "Delete" || e.key === "Backspace"){ e.preventDefault(); deleteSelected(); return; }
-  if (e.key === "Escape"){ select(null); refreshOverlay(); return; }
+  if (e.key === "Escape"){ pickingColor = false; canvasEl.style.cursor = ""; select(null); refreshOverlay(); return; }
   const arrows = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]};
   if (arrows[e.key]){
     e.preventDefault();
