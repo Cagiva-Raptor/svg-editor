@@ -163,6 +163,7 @@
     Sleep op lege canvas = kader-selectie (meerdere) · Shift/Ctrl+klik = toevoegen/weghalen<br>
     Pijltjes: verplaatsen (Shift = 10, Ctrl = raster) · Ctrl+Z/Y: undo/redo<br>
     Volgorde: sleep een laag in het linkerpaneel, of gebruik ▲▼ / Achteraan / Vooraan (rechts).<br>
+    Tekst: dubbelklik op de tekst om te bewerken (of het <b>Tekst</b>-veld rechts); na het plaatsen gaat de tool terug naar Selecteren.<br>
     JPG/PNG → SVG: sleep een afbeelding op het canvas of gebruik de afbeelding-knop (vereist serve.py).</p>
   </aside>
 </main>
@@ -883,6 +884,17 @@ let gesture = null;
 
 overlay.addEventListener("pointerdown", onOverlayDown);
 stage.addEventListener("pointerdown", onStageDown);
+stage.addEventListener("dblclick", e => {
+  const el = e.target.closest && e.target.closest("[data-id]");
+  if (!el || tag(el) !== "text") return;
+  setTool("select");
+  select(el);
+  focusTextInput();
+});
+function focusTextInput(){
+  const n = document.getElementById("p-text");
+  if (n){ n.focus(); n.select(); }
+}
 
 function onStageDown(e){
   if (e.button === 1 || spaceDown){ e.preventDefault(); startPan(e); return; }
@@ -1023,6 +1035,8 @@ function startDraw(e){
     el.setAttribute("x", p.x); el.setAttribute("y", p.y);
     el.setAttribute("transform", `matrix(1 0 0 1 0 0)`);
     content.appendChild(el); select(el); pushHistory();
+    setTool("select");
+    focusTextInput();
     return;
   }
   if (tool === "path"){
