@@ -131,7 +131,8 @@
       <button id="doc-stroke" class="ghost">Alle randen</button>
     </div>
     <p class="hint">Werkt niet? Zoom met het wiel, pan met midden-muis of spatie+slepen.<br>
-    V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer (vul lege vlakken)</b> · Del: verwijderen · Ctrl+Z/Y: undo/redo</p>
+    V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer (vul lege vlakken)</b> · Del: verwijderen<br>
+    Pijltjes: verplaatsen (Shift = 10, Ctrl = op het raster) · Ctrl+Z/Y: undo/redo</p>
   </aside>
 </main>
 
@@ -753,6 +754,37 @@ function duplicateSelected(){
   setStatus("Gedupliceerd");
 }
 
+/* ---------- toetsenbord-verplaatsing ---------- */
+const NUDGE_STEP = 1;
+const NUDGE_BIG  = 10;
+const GRID       = 10;
+
+function userMinCorner(el){
+  const b = bboxOf(el);
+  const M = getMatrix(el);
+  const pts = [[b.x,b.y],[b.x+b.w,b.y],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h]]
+    .map(p => new DOMPoint(p[0], p[1]).matrixTransform(M));
+  return { x: Math.min(...pts.map(p=>p.x)), y: Math.min(...pts.map(p=>p.y)) };
+}
+function translateBy(el, dx, dy){
+  const M = getMatrix(el);
+  setMatrix(el, new DOMMatrix().translate(dx, dy).multiply(M));
+}
+function nudgeSelected(dx, dy, snapToGrid){
+  if (!selected) return;
+  if (snapToGrid){
+    const m = userMinCorner(selected);
+    const tx = Math.round((m.x + dx*GRID)/GRID)*GRID;
+    const ty = Math.round((m.y + dy*GRID)/GRID)*GRID;
+    translateBy(selected, tx - m.x, ty - m.y);
+  } else {
+    translateBy(selected, dx, dy);
+  }
+  pushHistory();
+  refreshOverlay();
+  setStatus("Verplaatst");
+}
+
 /* ---------- tools ---------- */
 function setTool(t){
   tool = t;
@@ -1017,6 +1049,15 @@ document.addEventListener("keydown", e => {
   if (inField) return;
   if (e.key === "Delete" || e.key === "Backspace"){ e.preventDefault(); deleteSelected(); return; }
   if (e.key === "Escape"){ select(null); refreshOverlay(); return; }
+  const arrows = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]};
+  if (arrows[e.key]){
+    e.preventDefault();
+    if (!selected) return;
+    const [dx, dy] = arrows[e.key];
+    if (e.ctrlKey || e.metaKey) nudgeSelected(dx, dy, true);
+    else nudgeSelected(dx * (e.shiftKey ? NUDGE_BIG : NUDGE_STEP), dy * (e.shiftKey ? NUDGE_BIG : NUDGE_STEP), false);
+    return;
+  }
   if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "z"){ e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "y"){ e.preventDefault(); redo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === "d"){ e.preventDefault(); duplicateSelected(); return; }
