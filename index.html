@@ -54,6 +54,7 @@
   .layer{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;cursor:pointer;margin-bottom:2px}
   .layer:hover{background:var(--panel2)}
   .layer.sel{background:var(--accent);color:#fff}
+  .layer.drop{outline:2px dashed var(--accent);outline-offset:-2px}
   .layer .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .layer .mini{opacity:.8;font-size:11px;cursor:pointer;padding:0 2px}
   .field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
@@ -143,6 +144,7 @@
     V: selecteren · R/E/L/P/T: tekenen · <b>U: emmer</b> · Del: verwijderen<br>
     Sleep op lege canvas = kader-selectie (meerdere) · Shift/Ctrl+klik = toevoegen/weghalen<br>
     Pijltjes: verplaatsen (Shift = 10, Ctrl = raster) · Ctrl+Z/Y: undo/redo<br>
+    Volgorde: sleep een laag in het linkerpaneel, of gebruik ▲▼ / Achteraan / Vooraan (rechts).<br>
     JPG/PNG → SVG: sleep een afbeelding op het canvas of gebruik de afbeelding-knop (vereist serve.py).</p>
   </aside>
 </main>
@@ -187,7 +189,8 @@ const PRESENT = new Set(INHERIT);
 let uid = 0;
 let tool = "select";
 let selection = [];
-let quads = [];            // overlay handles
+let quads = [];
+let dragLayer = null;            // overlay handles
 let history = [];
 let future = [];
 let clipboard = null;
@@ -346,6 +349,58 @@ function makeHandle(x,y,id,kind){
 }
 
 /* ---------- properties panel ---------- */
+const GEO_ATTRS = {
+  "g-x":"x", "g-y":"y", "g-w":"width", "g-h":"height", "g-rx":"rx", "g-ry":"ry",
+  "g-cx":"cx", "g-cy":"cy", "g-r":"r",
+  "g-x1":"x1", "g-y1":"y1", "g-x2":"x2", "g-y2":"y2"
+};
+function geomField(id, label, val){
+  return `<div class="field"><label>${label}</label><input type="number" step="1" id="${id}" value="${val}"></div>`;
+}
+function geometryFields(el){
+  const t = tag(el);
+  const g = a => { const v = el.getAttribute(a); return v === null ? "" : v; };
+  if (t === "rect")    return geomField("g-x","X",g("x")) + geomField("g-y","Y",g("y")) +
+                              geomField("g-w","Breedte",g("width")) + geomField("g-h","Hoogte",g("height")) +
+                              geomField("g-rx","Afronding",g("rx") || 0);
+  if (t === "ellipse") return geomField("g-cx","CX",g("cx")) + geomField("g-cy","CY",g("cy")) +
+                              geomField("g-rx","RX",g("rx")) + geomField("g-ry","RY",g("ry"));
+  if (t === "circle")  return geomField("g-cx","CX",g("cx")) + geomField("g-cy","CY",g("cy")) + geomField("g-r","R",g("r"));
+  if (t === "line")    return geomField("g-x1","X1",g("x1")) + geomField("g-y1","Y1",g("y1")) +
+                              geomField("g-x2","X2",g("x2")) + geomField("g-y2","Y2",g("y2"));
+  if (t === "text")    return geomField("g-x","X",g("x")) + geomField("g-y","Y",g("y"));
+  return "";
+}
+function wireGeometry(el, commit){
+  Object.entries(GEO_ATTRS).forEach(([id, attr]) => {
+    const n = document.getElementById(id);
+    if (!n) return;
+    const set = () => {
+      if (n.value === "") el.removeAttribute(attr); else el.setAttribute(attr, n.value);
+      if (id === "g-rx" && tag(el) === "rect"){
+        if (n.value === "") el.removeAttribute("ry"); else el.setAttribute("ry", n.value);
+      }
+      refreshOverlay();
+    };
+    n.addEventListener("input", set);
+    n.addEventListener("change", commit);
+  });
+}
+function reorderButtons(){
+  return `<div class="row" style="margin-top:10px">
+    <button id="p-start" class="ghost" title="Helemaal naar achter">⤓ Achteraan</button>
+    <button id="p-down" class="ghost" title="Een laag naar achter">▼</button>
+    <button id="p-up" class="ghost" title="Een laag naar voor">▲</button>
+    <button id="p-end" class="ghost" title="Helemaal naar voor">⤒ Vooraan</button>
+  </div>`;
+}
+function wireReorder(){
+  const on = (id, fn) => { const n = document.getElementById(id); if (n) n.addEventListener("click", fn); };
+  on("p-start", sendToStart);
+  on("p-end", sendToEnd);
+  on("p-up", () => moveSelectedByStep(1));
+  on("p-down", () => moveSelectedByStep(-1));
+}
 function refreshProps(){
   if (!selection.length){
     propsEl.innerHTML = '<p class="empty">Klik een vorm op het canvas om ze te bewerken, sleep een kader om meerdere te selecteren, of gebruik <b>Kleur alles</b> hieronder.</p>';
@@ -376,8 +431,10 @@ function refreshProps(){
         <input type="number" id="p-op" min="0" max="1" step="0.05" value="${first.getAttribute("opacity") ?? 1}">
       </div>
       <div class="row" style="margin-top:10px">
-        <button id="p-back" class="ghost">Naar achter</button>
-        <button id="p-front" class="ghost">Naar voor</button>
+        <button id="p-start" class="ghost" title="Helemaal naar achter">⤓ Achteraan</button>
+        <button id="p-down" class="ghost" title="Een laag naar achter">▼</button>
+        <button id="p-up" class="ghost" title="Een laag naar voor">▲</button>
+        <button id="p-end" class="ghost" title="Helemaal naar voor">⤒ Vooraan</button>
       </div>`;
     const applyAll = (attr, val) => {
       selection.forEach(el => val === null ? el.removeAttribute(attr) : el.setAttribute(attr, val));
@@ -394,8 +451,7 @@ function refreshProps(){
     on("p-sw","change", commit);
     on("p-op","input", e => applyAll("opacity", e.target.value === "1" ? null : e.target.value));
     on("p-op","change", commit);
-    on("p-back","click",  () => { selection.slice().reverse().forEach(el => content.insertBefore(el, content.firstChild)); rebuildLayers(); commit(); });
-    on("p-front","click", () => { selection.forEach(el => content.appendChild(el)); rebuildLayers(); commit(); });
+    wireReorder();
     return;
   }
 
@@ -423,6 +479,7 @@ function refreshProps(){
     <div class="field"><label>Opacity</label>
       <input type="number" id="p-op" min="0" max="1" step="0.05" value="${el.getAttribute("opacity") ?? 1}">
     </div>
+    ${geometryFields(el)}
     ${isText ? `
     <div class="field"><label>Tekst</label>
       <input type="text" id="p-text" value="${escapeAttr(el.textContent)}" style="width:100%">
@@ -431,8 +488,10 @@ function refreshProps(){
       <input type="number" id="p-fs" min="1" value="${el.getAttribute("font-size") || 16}">
     </div>` : ""}
     <div class="row" style="margin-top:10px">
-      <button id="p-back" class="ghost">Naar achter</button>
-      <button id="p-front" class="ghost">Naar voor</button>
+      <button id="p-start" class="ghost" title="Helemaal naar achter">⤓ Achteraan</button>
+      <button id="p-down" class="ghost" title="Een laag naar achter">▼</button>
+      <button id="p-up" class="ghost" title="Een laag naar voor">▲</button>
+      <button id="p-end" class="ghost" title="Helemaal naar voor">⤒ Vooraan</button>
     </div>
   `;
   const apply = (attr, val) => { if (val === null) el.removeAttribute(attr); else el.setAttribute(attr, val); refreshOverlay(); rebuildLayers(); };
@@ -452,8 +511,8 @@ function refreshProps(){
   on("p-text","change", commit);
   on("p-fs","input", e => apply("font-size", e.target.value));
   on("p-fs","change", commit);
-  on("p-back","click", () => { content.insertBefore(el, content.firstChild); rebuildLayers(); commit(); });
-  on("p-front","click", () => { content.appendChild(el); rebuildLayers(); commit(); });
+  wireGeometry(el, commit);
+  wireReorder();
 }
 function toHex(c){
   if (!c || c === "none") return "#000000";
@@ -476,6 +535,7 @@ function rebuildLayers(){
     const el = kids[i];
     const row = document.createElement("div");
     row.className = "layer" + (isSelected(el) ? " sel" : "");
+    row.draggable = true;
     const hidden = el.getAttribute("visibility") === "hidden";
     row.innerHTML = `<span class="name">${el.dataset.bucket ? "Vlak" : (LABELS[tag(el)]||tag(el))}</span>
       <span class="mini" data-act="vis" title="Zichtbaar">${hidden?"◌":"●"}</span>
@@ -488,6 +548,28 @@ function rebuildLayers(){
       } else {
         select(el);
       }
+    });
+    row.addEventListener("dragstart", e => { dragLayer = el; e.dataTransfer.effectAllowed = "move"; });
+    row.addEventListener("dragover", e => {
+      if (!dragLayer || dragLayer === el) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      row.classList.add("drop");
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("drop"));
+    row.addEventListener("drop", e => {
+      e.preventDefault();
+      row.classList.remove("drop");
+      if (!dragLayer || dragLayer === el) { dragLayer = null; return; }
+      const arr = [...content.children];
+      arr.splice(arr.indexOf(dragLayer), 1);
+      let at = arr.indexOf(el);
+      const r = row.getBoundingClientRect();
+      const above = e.clientY < r.top + r.height/2;   // visueel boven = meer naar voor
+      at = above ? at + 1 : at;
+      arr.splice(at, 0, dragLayer);
+      dragLayer = null;
+      applyOrder(arr);
     });
     layersEl.appendChild(row);
   }
@@ -502,6 +584,40 @@ function setSelection(arr){
   refreshOverlay();
 }
 function select(el){ setSelection(el ? [el] : []); }
+
+/* ---------- volgorde (z-order) ---------- */
+function applyOrder(arr){
+  arr.forEach(el => content.appendChild(el));
+  rebuildLayers(); refreshOverlay(); pushHistory();
+  setStatus("Volgorde aangepast");
+}
+function sendToStart(){
+  if (!selection.length) return;
+  const arr = [...content.children];
+  const sel = arr.filter(e => isSelected(e));
+  const rest = arr.filter(e => !isSelected(e));
+  applyOrder([...sel, ...rest]);
+}
+function sendToEnd(){
+  if (!selection.length) return;
+  const arr = [...content.children];
+  const sel = arr.filter(e => isSelected(e));
+  const rest = arr.filter(e => !isSelected(e));
+  applyOrder([...rest, ...sel]);
+}
+function moveSelectedByStep(dir){
+  if (!selection.length) return;
+  const arr = [...content.children];
+  const order = dir > 0 ? [...selection] : [...selection].reverse();
+  order.forEach(el => {
+    const i = arr.indexOf(el);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= arr.length) return;
+    if (isSelected(arr[j])) return;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  });
+  applyOrder(arr);
+}
 
 /* ---------- create shapes ---------- */
 function newShape(kind){
